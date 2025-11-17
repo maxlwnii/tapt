@@ -4,5 +4,5 @@ python3 preprocess.py \
     --eclip ../data/rel_data/combined_sorted_idr.bed \
     --output preprocessed_data \
     --max_len 1024 \
-    --stride 256
-    
+    --stride 256 \
+    --merge_peaks

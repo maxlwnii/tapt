@@ -4,7 +4,7 @@ It reads a fasta file containg verified CLIP peaks and a BED file with eCLIP pea
 It generates fixed-length sequences based on the following strategy:
 1) For sequences shorter than max_len, take the entire sequence (later padded)
 2) For sequences longer than max_len: Sample overlapping windows of length max_len with stride 
-3) For very long sequences, it samples sqrt(#binding_sites) often random regions of max_len size
+3) For very long sequences, it samples sqrt(#b inding_sites) often random regions of max_len size
 """
 
 import numpy as np
@@ -133,32 +133,32 @@ def read_eclip_bed_file(bed_file, filter_random=True):
         bed_file: Path to the BED file.
         filter_random: If True, filters out random/unplaced chromosomes.
 
-        >>> import json
-        >>> bed_path = '../doctest/test_eclip.bed'
-        >>> result = read_eclip_bed_file(bed_path)
-        >>> print(json.dumps(result, sort_keys=True, indent=2))
+    >>> import json
+    >>> bed_path = '../doctest/test_eclip.bed'
+    >>> result = read_eclip_bed_file(bed_path)
+    >>> print(json.dumps(result, sort_keys=True, indent=2))
+    {
+      "chr1": [
         {
-          "chr1": [
-            {
-              "end": 105,
-              "start": 102
-            },
-            {
-              "end": 550,
-              "start": 500
-            },
-            {
-              "end": 103,
-              "start": 102
-            }
-          ],
-          "chrX": [
-            {
-              "end": 54,
-              "start": 51
-            }
-          ]
+          "end": 105,
+          "start": 102
+        },
+        {
+          "end": 550,
+          "start": 500
+        },
+        {
+          "end": 103,
+          "start": 102
         }
+      ],
+      "chrX": [
+        {
+          "end": 54,
+          "start": 51
+        }
+      ]
+    }
     """
     peaks = defaultdict(list)
     with open(bed_file, 'r') as f:
@@ -188,49 +188,74 @@ def combine_eclip_fasta(sequences, eclip_peaks):
         sequences: List of sequences from fasta.
         eclip_peaks: Dictionary of eCLIP peaks.
     Returns:
-        List of sequences with coordinates from eCLIP peaks.
+        Dictionary with sequence info and list of eCLIP peak coordinates for each sequence.
+        
     >>> sequences = read_fasta_file('../doctest/test.fa')
     >>> eclip_peaks = read_eclip_bed_file('../doctest/test_eclip.bed')
     
     >>> combined_result = combine_eclip_fasta(sequences, eclip_peaks)
     >>> print(json.dumps(combined_result, indent=2, sort_keys=True))
     {
-      "chr1:100-110": [
-        {
+      "chr1:100-110": {
+        "peaks": [
+          {
+            "genomic_end": 105,
+            "genomic_start": 102,
+            "peak_end": 5,
+            "peak_start": 2,
+            "seq_len": 3,
+            "sequence": "CAG"
+          },
+          {
+            "genomic_end": 103,
+            "genomic_start": 102,
+            "peak_end": 3,
+            "peak_start": 2,
+            "seq_len": 1,
+            "sequence": "C"
+          }
+        ],
+        "sequence_info": {
           "chrom": "chr1",
-          "peak_end": 5,
-          "peak_start": 2,
-          "seq_end": 110,
+          "end": 110,
           "seq_id": "chr1:100-110",
-          "seq_len": 3,
-          "seq_start": 100,
-          "sequence": "CAG"
-        },
-        {
-          "chrom": "chr1",
-          "peak_end": 3,
-          "peak_start": 2,
-          "seq_end": 110,
-          "seq_id": "chr1:100-110",
-          "seq_len": 1,
-          "seq_start": 100,
-          "sequence": "C"
+          "seq_len": 10,
+          "sequence": "AGCAGTCGAT",
+          "start": 100
         }
-      ],
-      "chrX:50-55": [
-        {
+      },
+      "chr2:200-205": {
+        "peaks": [],
+        "sequence_info": {
+          "chrom": "chr2",
+          "end": 205,
+          "seq_id": "chr2:200-205",
+          "seq_len": 5,
+          "sequence": "ACGTG",
+          "start": 200
+        }
+      },
+      "chrX:50-55": {
+        "peaks": [
+          {
+            "genomic_end": 54,
+            "genomic_start": 51,
+            "peak_end": 4,
+            "peak_start": 1,
+            "seq_len": 3,
+            "sequence": "CGG"
+          }
+        ],
+        "sequence_info": {
           "chrom": "chrX",
-          "peak_end": 4,
-          "peak_start": 1,
-          "seq_end": 55,
+          "end": 55,
           "seq_id": "chrX:50-55",
-          "seq_len": 3,
-          "seq_start": 50,
-          "sequence": "CGG"
+          "seq_len": 5,
+          "sequence": "CCGGT",
+          "start": 50
         }
-      ]
+      }
     }
-
     """
     
     combined = {}
@@ -239,68 +264,123 @@ def combine_eclip_fasta(sequences, eclip_peaks):
         seq_start = seq['start']
         seq_end = seq['end']
         chrom = seq['chrom']
-    
+        
+        # Initialize entry for every sequence
+        combined[seq_id] = {
+            "sequence_info": seq,
+            "peaks": []
+        }
+        
+        # Check if chromosome has any peaks
+        if chrom not in eclip_peaks:
+            continue
+            
         for peak in eclip_peaks[chrom]:
             if peak['start'] < seq_start or peak['end'] > seq_end:
                 continue
             combined_start = peak['start'] - seq_start
             combined_end = peak['end'] - seq_start
-            if combined.get(seq_id) is None:
-                combined[seq_id] = list()
-            combined[seq_id].append({
-                'chrom': seq['chrom'],
-                'seq_id': f"{seq_id}",
-                'seq_start': seq_start,
-                'seq_end': seq_end,
+            
+            combined[seq_id]["peaks"].append({
                 'peak_start': combined_start,
                 'peak_end': combined_end,
                 'sequence': seq['sequence'][combined_start : combined_end],
-                'seq_len': peak['end'] - peak['start']
+                'seq_len': peak['end'] - peak['start'],
+                'genomic_start': peak['start'],
+                'genomic_end': peak['end'],
             })
 
     return combined
 
 
-def sliding_window(seq_id, seq, max_len=1024, stride=256):
+def sliding_window(seq_id, seq, eclip_peaks_local, max_len=1024, stride=256):
     """
     Sequences longer than max_length but not considered very long are split into overlapping windows
     using a pre-defined fix-size stride.
+    
+    Args:
+        seq_id: Sequence identifier
+        seq: Full sequence string
+        eclip_peaks_local: List of eCLIP peaks with coordinates relative to the full sequence
+        max_len: Maximum window length
+        stride: Step size for sliding window
+        
+    Returns:
+        List of windows, each with eCLIP peaks mapped to window-local coordinates
     """
     seq_len = len(seq)
     windows = []
+    
     for start in range(0, seq_len - max_len + 1, stride):
         end = start + max_len
-    
+        
+        # Map eCLIP peaks to this window's local coordinates
+        peaks_in_window = []
+        for peak in eclip_peaks_local:
+            peak_start = peak['peak_start']
+            peak_end = peak['peak_end']
+            
+            # Check if peak overlaps with window [start, end)
+            if peak_end > start and peak_start < end:
+                # Convert to window-local coordinates
+                local_start = max(0, peak_start - start)
+                local_end = min(max_len, peak_end - start)
+                
+                peaks_in_window.append({
+                    'peak_start': local_start,
+                    'peak_end': local_end,
+                    'genomic_start': peak['genomic_start'],
+                    'genomic_end': peak['genomic_end']
+                })
+        
         windows.append({
             'sequence': seq[start:end],
             'seq_id': f"{seq_id}_window_{start}_{end}",
             'start': start,
             'end': end,
             'method': 'sliding_window',
-            'seq_len': max_len
+            'seq_len': max_len,
+            'eclip_regions': peaks_in_window  # Window-local coordinates
         })
+    
     # Handle last window if not aligned
     if windows and windows[-1]['end'] < seq_len:
         last_start = seq_len - max_len
         if last_start > windows[-1]['start']:  # Avoid duplicate
+            peaks_in_window = []
+            for peak in eclip_peaks_local:
+                peak_start = peak['peak_start']
+                peak_end = peak['peak_end']
+                
+                if peak_end > last_start and peak_start < seq_len:
+                    local_start = max(0, peak_start - last_start)
+                    local_end = min(max_len, peak_end - last_start)
+                    
+                    peaks_in_window.append({
+                        'peak_start': local_start,
+                        'peak_end': local_end,
+                        'genomic_start': peak['genomic_start'],
+                        'genomic_end': peak['genomic_end']
+                    })
+            
             windows.append({
                 'sequence': seq[last_start:seq_len],
                 'seq_id': f"{seq_id}_window_{last_start}_{seq_len}",
                 'start': last_start,
                 'end': seq_len,
                 'method': 'sliding_window',
-                'seq_len': max_len
+                'seq_len': max_len,
+                'eclip_regions': peaks_in_window
             })
 
     return windows
 
 
-def weighted_sampling(combined,seq, max_len=1024):
+def weighted_sampling(combined, seq, max_len=1024):
     """
     "Very" long sequences are processed by selecting sqrt(#binding_sites) random windows of size max_len.
-    Sample around coordinates probided by eClip peaks.
+    Sample around coordinates provided by eCLIP peaks.
     """
-
     windows = []
     max_sample = np.sqrt(seq['num_binding_sites']).astype(int)
 
@@ -312,18 +392,37 @@ def weighted_sampling(combined,seq, max_len=1024):
     seq_length = seq['seq_len']
     full_sequence = seq['sequence']
 
-    combined_list = combined.get(seq_id, [])
-    eCLIP_binding = len(combined_list)
+    peaks_list = combined.get(seq_id, {}).get('peaks', [])
+    eCLIP_binding = len(peaks_list)
 
     for _ in range(min(eCLIP_binding, max_sample)):
-        
-        peak = np.random.choice(combined_list)
+        peak = np.random.choice(peaks_list)
         peak_start = peak['peak_start']
         peak_end = peak['peak_end']
         center = (peak_start + peak_end) // 2
         ideal_start = center - (max_len // 2)
         window_start = max(0, min(ideal_start, seq_length - max_len))
         window_end = min(window_start + max_len, seq_length)
+        if f"{seq_id}_weighted_{window_start}_{window_end}" in [w['seq_id'] for w in windows]:
+            print(f"Skipped duplicate window {seq_id}_weighted_{window_start}_{window_end}")
+            continue 
+        # Map ALL eCLIP peaks that fall in this window to window-local coordinates
+        peaks_in_window = []
+        for p in peaks_list:
+            p_start = p['peak_start']
+            p_end = p['peak_end']
+            
+            # Check if peak overlaps with window
+            if p_end > window_start and p_start < window_end:
+                local_start = max(0, p_start - window_start)
+                local_end = min(max_len, p_end - window_start)
+                
+                peaks_in_window.append({
+                    'peak_start': local_start,
+                    'peak_end': local_end,
+                    'genomic_start': p['genomic_start'],
+                    'genomic_end': p['genomic_end']
+                })
 
         window_sequence = full_sequence[window_start:window_end]
         windows.append({
@@ -332,11 +431,12 @@ def weighted_sampling(combined,seq, max_len=1024):
             'start': window_start,
             'end': window_end,
             'method': 'weighted_sampling',
-            'seq_len': len(window_sequence)
+            'seq_len': len(window_sequence),
+            'eclip_regions': peaks_in_window  # Window-local coordinates
         })
 
-
     return windows
+
 
 def preprocess_sequences(sequences, peaks_dict, combined, max_len=1024, stride=256):
     """Preprocess sequences based on their lengths."""
@@ -353,29 +453,44 @@ def preprocess_sequences(sequences, peaks_dict, combined, max_len=1024, stride=2
         seq_id = seq['seq_id']
         full_sequence = seq['sequence']
         num_binding_sites = 0
+        
         if seq['chrom'] in peaks_dict:
             for peak in peaks_dict[seq['chrom']]:
                 if peak['start'] >= seq['start'] and peak['end'] <= seq['end']:
                     num_binding_sites += peak['num_binding_sites']
         
         seq['num_binding_sites'] = num_binding_sites
+        
+        # Get eCLIP peaks for this sequence (already in local coordinates from combine_eclip_fasta)
+        eclip_peaks_local = combined.get(seq_id, {}).get('peaks', [])
 
         if seq_len <= max_len:
-            # Short sequences: take entire sequence (pad later)
+            # Short sequences: entire sequence (peaks are already in correct coordinates)
+            peaks_in_window = [
+                {
+                    'peak_start': p['peak_start'],
+                    'peak_end': p['peak_end'],
+                    'genomic_start': p['genomic_start'],
+                    'genomic_end': p['genomic_end']
+                }
+                for p in eclip_peaks_local
+            ]
+            
             processed_data.append({
                 'sequence': full_sequence,
                 'seq_id': seq_id,
                 'start': 0,
                 'end': seq_len,
                 'method': 'full_sequence',
-                'seq_len': seq_len
+                'seq_len': seq_len,
+                'eclip_regions': peaks_in_window
             })
             stats['short_padded'] += 1
             stats['total_windows'] += 1
 
-        elif seq_len <=  6 * max_len:
+        elif seq_len <= 6 * max_len:
             # Medium sequences: sliding window
-            windows = sliding_window(seq_id, full_sequence, max_len, stride)
+            windows = sliding_window(seq_id, full_sequence, eclip_peaks_local, max_len, stride)
             processed_data.extend(windows)
             stats['medium_windowed'] += 1
             stats['total_windows'] += len(windows)
@@ -423,6 +538,64 @@ def save_processed_data(processed_data, output_prefix):
     print(f"  - {output_prefix}_metadata.json")
 
 
+def merge_overlapping_peaks(eclip_peaks_dict, min_overlap=1):
+    """
+    Merge overlapping eCLIP peaks within each chromosome.
+    
+    Args:
+        eclip_peaks_dict: Dictionary of eCLIP peaks by chromosome.
+        min_overlap: Minimum overlap to consider peaks as overlapping (in base pairs).
+        
+    Returns:
+        Dictionary with merged peaks.
+    """
+    merged_peaks = defaultdict(list)
+    
+    for chrom, peaks in eclip_peaks_dict.items():
+        # Sort peaks by start position
+        sorted_peaks = sorted(peaks, key=lambda x: x['start'])
+        current_merged = None
+        
+        for peak in sorted_peaks:
+            if current_merged is None:
+                current_merged = {
+                    'start': peak['start'],
+                    'end': peak['end']
+                }
+            else:
+                # Check if there is an overlap
+                if peak['start'] <= current_merged['end'] + min_overlap:
+                    # Merge by extending the end
+                    current_merged['end'] = max(current_merged['end'], peak['end'])
+                else:
+                    # No overlap, push current merged and start new
+                    merged_peaks[chrom].append(current_merged)
+                    current_merged = {
+                        'start': peak['start'],
+                        'end': peak['end']
+                    }
+        
+        # Add the last merged peak
+        if current_merged is not None:
+            merged_peaks[chrom].append(current_merged)
+    
+    return merged_peaks
+
+
+def print_merge_statistics(original_peaks, merged_peaks):
+    """
+    Print statistics about peak merging.
+    
+    Args:
+        original_peaks: Original eCLIP peaks dictionary.
+        merged_peaks: Merged eCLIP peaks dictionary.
+    """
+    total_original = sum(len(peaks) for peaks in original_peaks.values())
+    total_merged = sum(len(peaks) for peaks in merged_peaks.values())
+    
+    print(f"Merged {total_original} original peaks into {total_merged} merged peaks.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Preprocess eCLIP data.")
     parser.add_argument('--fasta', type=str, required=True, help='Path to the fasta file with verified CLIP peaks.')
@@ -431,6 +604,7 @@ def main():
     parser.add_argument('--output', type=str, required=False, help='Path to the output JSON file.')
     parser.add_argument('--max_len', type=int, default=1024, help='Maximum length of sequences.')
     parser.add_argument('--stride', type=int, default=256, help='Stride for sliding window.')
+    parser.add_argument('--merge_peaks', action='store_true', help='Merge overlapping eCLIP peaks.')
     
     args = parser.parse_args()
 
@@ -438,18 +612,27 @@ def main():
     print("CLIP Peak Sequence Preprocessing")
     print("=" * 80)
     
-    
     # Read input files
-    print("\n[1/4] Reading FASTA file...")
+    print("\n[1/5] Reading FASTA file...")
     sequences = read_fasta_file(args.fasta)
     
-    print("\n[2/4] Reading BED file...")
+    print("\n[2/5] Reading BED file...")
     peaks_dict = read_bed_file(args.bed, filter_random=True)
+    
+    print("\n[3/5] Reading eCLIP BED file...")
     eclip_peaks_dict = read_eclip_bed_file(args.eclip, filter_random=True)
+    
+    # Merge overlapping peaks if requested
+    if args.merge_peaks:
+        print("\n[3.5/5] Merging overlapping eCLIP peaks...")
+        eclip_peaks_merged = merge_overlapping_peaks(eclip_peaks_dict, min_overlap=1)
+        print_merge_statistics(eclip_peaks_dict, eclip_peaks_merged)
+        eclip_peaks_dict = eclip_peaks_merged
+    
     combined = combine_eclip_fasta(sequences, eclip_peaks_dict)
     
     # Preprocess
-    print(f"\n[3/4] Processing sequences (max_len={args.max_len}, stride={args.stride})...")
+    print(f"\n[4/5] Processing sequences (max_len={args.max_len}, stride={args.stride})...")
     processed_data, stats = preprocess_sequences(
         sequences, peaks_dict, combined,
         max_len=args.max_len, 
@@ -457,7 +640,7 @@ def main():
     )
     
     # Save results
-    print("\n[4/4] Saving processed data...")
+    print("\n[5/5] Saving processed data...")
     save_processed_data(processed_data, args.output)
     
     # Print statistics

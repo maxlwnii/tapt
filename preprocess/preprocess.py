@@ -233,14 +233,13 @@ def combine_eclip_fasta(sequences, eclip_peaks):
 
     """
     
-    combined = dict(list())
+    combined = {}
     for seq in sequences:
         seq_id = seq['seq_id']
         seq_start = seq['start']
         seq_end = seq['end']
         chrom = seq['chrom']
-       # if chrom not in eclip_peaks:
-       #     continue
+    
         for peak in eclip_peaks[chrom]:
             if peak['start'] < seq_start or peak['end'] > seq_end:
                 continue
@@ -281,17 +280,17 @@ def sliding_window(seq_id, seq, max_len=1024, stride=256):
             'seq_len': max_len
         })
     # Handle last window if not aligned
-    if (seq_len - max_len) % stride != 0:
-        start = seq_len - max_len
-        end = seq_len
-        windows.append({
-            'sequence': seq[start:end],
-            'seq_id': f"{seq_id}_window_{start}_{end}",
-            'start': start,
-            'end': end,
-            'method': 'sliding_window',
-            'seq_len': max_len
-        })
+    if windows and windows[-1]['end'] < seq_len:
+        last_start = seq_len - max_len
+        if last_start > windows[-1]['start']:  # Avoid duplicate
+            windows.append({
+                'sequence': seq[last_start:seq_len],
+                'seq_id': f"{seq_id}_window_{last_start}_{seq_len}",
+                'start': last_start,
+                'end': seq_len,
+                'method': 'sliding_window',
+                'seq_len': max_len
+            })
 
     return windows
 
@@ -339,7 +338,7 @@ def weighted_sampling(combined,seq, max_len=1024):
 
     return windows
 
-def preprocess_sequences(sequences, peaks_dict, eclip_peaks_dict, max_len=1024, stride=256):
+def preprocess_sequences(sequences, peaks_dict, combined, max_len=1024, stride=256):
     """Preprocess sequences based on their lengths."""
     processed_data = []
     stats = {
@@ -372,8 +371,9 @@ def preprocess_sequences(sequences, peaks_dict, eclip_peaks_dict, max_len=1024, 
                 'seq_len': seq_len
             })
             stats['short_padded'] += 1
+            stats['total_windows'] += 1
 
-        elif seq_len <=  4 * max_len:
+        elif seq_len <=  6 * max_len:
             # Medium sequences: sliding window
             windows = sliding_window(seq_id, full_sequence, max_len, stride)
             processed_data.extend(windows)
@@ -382,7 +382,7 @@ def preprocess_sequences(sequences, peaks_dict, eclip_peaks_dict, max_len=1024, 
 
         else:
             # Long sequences: weighted sampling
-            windows = weighted_sampling(eclip_peaks_dict, seq, max_len)
+            windows = weighted_sampling(combined, seq, max_len)
             processed_data.extend(windows)
             stats['long_sampled'] += 1
             stats['total_windows'] += len(windows)

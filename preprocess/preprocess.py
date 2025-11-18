@@ -376,21 +376,23 @@ def sliding_window(seq_id, seq, eclip_peaks_local, max_len=512, stride=256):
     return windows
 
 
-def weighted_sampling(combined, seq, max_len=512):
+def weighted_sampling(combined, seq, max_len=512, min_samples=1):
     """
-    "Very" long sequences are processed by selecting sqrt(#binding_sites) random windows of size max_len.
-    Sample around coordinates provided by eCLIP peaks.
+    Very long sequences are processed by:
+    1. Sampling eCLIP_binding windows centered on each peak
+    2. Additional uniform random sampling for diversity
     """
     windows = []
-    # Sample at least once from every sequence.
-
     seq_id = seq['seq_id']
     seq_length = seq['seq_len']
     full_sequence = seq['sequence']
-
     peaks_list = combined.get(seq_id, {}).get('peaks', [])
     eCLIP_binding = len(peaks_list)
-
+    
+    # Sanity check - in your case, always > 0
+    assert eCLIP_binding > 0, f"No eCLIP peaks found for {seq_id}"
+    
+    # PART 1: Sample around each peak
     for _ in range(eCLIP_binding):
         peak = np.random.choice(peaks_list)
         peak_start = peak['peak_start']
@@ -399,38 +401,70 @@ def weighted_sampling(combined, seq, max_len=512):
         ideal_start = center - (max_len // 2)
         window_start = max(0, min(ideal_start, seq_length - max_len))
         window_end = min(window_start + max_len, seq_length)
-        if f"{seq_id}_weighted_{window_start}_{window_end}" in [w['seq_id'] for w in windows]:
-            print(f"Skipped duplicate window {seq_id}_weighted_{window_start}_{window_end}")
-            continue 
-        # Map ALL eCLIP peaks that fall in this window to window-local coordinates
+        
+        window_id = f"{seq_id}_weighted_{window_start}_{window_end}"
+        if window_id in [w['seq_id'] for w in windows]:
+            continue
+        
+        # Map peaks in this window
         peaks_in_window = []
         for p in peaks_list:
-            p_start = p['peak_start']
-            p_end = p['peak_end']
-            
-            # Check if peak overlaps with window
-            if p_end > window_start and p_start < window_end:
-                local_start = max(0, p_start - window_start)
-                local_end = min(max_len, p_end - window_start)
-                
+            if p['peak_end'] > window_start and p['peak_start'] < window_end:
+                local_start = max(0, p['peak_start'] - window_start)
+                local_end = min(max_len, p['peak_end'] - window_start)
                 peaks_in_window.append({
                     'peak_start': local_start,
                     'peak_end': local_end,
                     'genomic_start': p['genomic_start'],
                     'genomic_end': p['genomic_end']
                 })
-
-        window_sequence = full_sequence[window_start:window_end]
+        
         windows.append({
-            'sequence': window_sequence,
-            'seq_id': f"{seq_id}_weighted_{window_start}_{window_end}",
+            'sequence': full_sequence[window_start:window_end],
+            'seq_id': window_id,
             'start': window_start,
             'end': window_end,
-            'method': 'weighted_sampling',
-            'seq_len': len(window_sequence),
-            'eclip_regions': peaks_in_window  # Window-local coordinates
+            'method': 'weighted_peak_centered',
+            'seq_len': len(full_sequence[window_start:window_end]),
+            'eclip_regions': peaks_in_window,
+            'num_peaks_in_window': len(peaks_in_window)
         })
-
+    
+    # PART 2: Additional uniform sampling for diversity
+    num_uniform = max(min_samples, int(np.sqrt(seq_length / max_len)))
+    
+    for _ in range(num_uniform):
+        max_start = max(0, seq_length - max_len)
+        window_start = np.random.randint(0, max_start + 1) if max_start > 0 else 0
+        window_end = min(window_start + max_len, seq_length)
+        
+        window_id = f"{seq_id}_uniform_{window_start}_{window_end}"
+        if window_id in [w['seq_id'] for w in windows]:
+            continue
+        
+        peaks_in_window = []
+        for p in peaks_list:
+            if p['peak_end'] > window_start and p['peak_start'] < window_end:
+                local_start = max(0, p['peak_start'] - window_start)
+                local_end = min(max_len, p['peak_end'] - window_start)
+                peaks_in_window.append({
+                    'peak_start': local_start,
+                    'peak_end': local_end,
+                    'genomic_start': p['genomic_start'],
+                    'genomic_end': p['genomic_end']
+                })
+        
+        windows.append({
+            'sequence': full_sequence[window_start:window_end],
+            'seq_id': window_id,
+            'start': window_start,
+            'end': window_end,
+            'method': 'weighted_uniform',
+            'seq_len': len(full_sequence[window_start:window_end]),
+            'eclip_regions': peaks_in_window,
+            'num_peaks_in_window': len(peaks_in_window)
+        })
+    
     return windows
 
 

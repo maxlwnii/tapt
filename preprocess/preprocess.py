@@ -4,7 +4,7 @@ It reads a fasta file containg verified CLIP peaks and a BED file with eCLIP pea
 It generates fixed-length sequences based on the following strategy:
 1) For sequences shorter than max_len, take the entire sequence (later padded)
 2) For sequences longer than max_len: Sample overlapping windows of length max_len with stride 
-3) For very long sequences, it samples sqrt(#b inding_sites) often random regions of max_len size
+3) For very long sequences, it samples sqrt(seq_len / max_len) often random regions of max_len size
 """
 
 import numpy as np
@@ -276,16 +276,18 @@ def combine_eclip_fasta(sequences, eclip_peaks):
             continue
             
         for peak in eclip_peaks[chrom]:
-            if peak['start'] < seq_start or peak['end'] > seq_end:
+            # If peaks are outside the sequence: skip
+            if peak['end'] <= seq_start or peak['start'] >= seq_end:
                 continue
-            combined_start = peak['start'] - seq_start
-            combined_end = peak['end'] - seq_start
+            # If peak is partially overlapping from the left
+            combined_start = max(0, peak['start'] - seq_start)
+            combined_end = min(seq_end - seq_start, peak['end'] - seq_start)
             
             combined[seq_id]["peaks"].append({
                 'peak_start': combined_start,
                 'peak_end': combined_end,
-                'sequence': seq['sequence'][combined_start : combined_end],
-                'seq_len': peak['end'] - peak['start'],
+                'sequence': seq['sequence'][combined_start:combined_end],
+                'seq_len': combined_end - combined_start,
                 'genomic_start': peak['start'],
                 'genomic_end': peak['end'],
             })
@@ -340,7 +342,7 @@ def sliding_window(seq_id, seq, eclip_peaks_local, max_len=512, stride=256):
             'end': end,
             'method': 'sliding_window',
             'seq_len': max_len,
-            'eclip_regions': peaks_in_window  # Window-local coordinates
+            'eclip_regions': peaks_in_window
         })
     
     # Handle last window if not aligned
@@ -403,7 +405,8 @@ def weighted_sampling(combined, seq, max_len=512, min_samples=1):
         window_end = min(window_start + max_len, seq_length)
         
         window_id = f"{seq_id}_weighted_{window_start}_{window_end}"
-        if window_id in [w['seq_id'] for w in windows]:
+        seen_ids = [w['seq_id'] for w in windows]
+        if window_id in seen_ids:
             continue
         
         # Map peaks in this window

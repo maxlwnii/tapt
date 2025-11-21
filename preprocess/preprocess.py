@@ -13,6 +13,8 @@ from collections import defaultdict
 import argparse
 import json
 
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
 
 def read_fasta_file(fasta_file):
     """Reads a fasta file and returns a dictionary of sequences.
@@ -378,7 +380,7 @@ def sliding_window(seq_id, seq, eclip_peaks_local, max_len=512, stride=256):
     return windows
 
 
-def weighted_sampling(combined, seq, max_len=512, min_samples=1):
+def weighted_sampling(combined, seq, max_len=512, min_samples=1, jitter=25):
     """
     Very long sequences are processed by:
     1. Sampling eCLIP_binding windows centered on each peak
@@ -399,13 +401,16 @@ def weighted_sampling(combined, seq, max_len=512, min_samples=1):
         peak = np.random.choice(peaks_list)
         peak_start = peak['peak_start']
         peak_end = peak['peak_end']
+        
         center = (peak_start + peak_end) // 2
-        ideal_start = center - (max_len // 2)
+        offset = np.random.randint(-jitter, jitter)
+        ideal_start = center - (max_len // 2) + offset
+        
         window_start = max(0, min(ideal_start, seq_length - max_len))
         window_end = min(window_start + max_len, seq_length)
         
         window_id = f"{seq_id}_weighted_{window_start}_{window_end}"
-        seen_ids = [w['seq_id'] for w in windows]
+        seen_ids = {w['seq_id'] for w in windows}
         if window_id in seen_ids:
             continue
         

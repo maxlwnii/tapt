@@ -3,3 +3,4 @@ dependencies_DNALM/
 preprocess/*.txt
 preprocess/__pycache__/
 preprocess/*.json
+LAMAR/

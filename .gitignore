@@ -4,3 +4,11 @@ preprocess/*.txt
 preprocess/__pycache__/
 preprocess/*.json
 LAMAR/
+# allow evalEmbeddings scripts
+!LAMAR/evalEmbeddings/
+LAMAR/evalEmbeddings/*
+!LAMAR/evalEmbeddings/LAMAR_CNN_updated.py
+!LAMAR/evalEmbeddings/LAMAR_CNN_updated_random.py
+
+# ignore full LLM_eval directory
+LLM_eval/

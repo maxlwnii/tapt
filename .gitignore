@@ -12,3 +12,7 @@ LAMAR/evalEmbeddings/*
 
 # ignore full LLM_eval directory
 LLM_eval/
+DNABERT_2_project/
+eclip/
+mRNABench/
+pretrain/

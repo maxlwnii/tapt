@@ -7,7 +7,10 @@ LAMAR/*
 # allow evalEmbeddings scripts and contents
 !LAMAR/evalEmbeddings/
 !LAMAR/evalEmbeddings/**
-
+# ignore SLURM batch job scripts (temporary, generated locally)
+LAMAR/evalEmbeddings/*.slurm
+LAMAR/finetune_scripts/**/*.slurm
+*.slurm
 # ignore full LLM_eval directory
 LLM_eval/
 DNABERT_2_project/

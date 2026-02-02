@@ -148,13 +148,6 @@ data/
 - Accuracy, F1, Precision, Recall
 - Matthews Correlation Coefficient
 
-### Expected Results (AUC-PRC)
-- DNABERT2 Pre-trained: 0.75-0.92
-- DNABERT2 Random: 0.55-0.75
-- LAMAR TAPT: 0.75-0.90
-- LAMAR Pre-trained: 0.70-0.85
-- One-Hot Baseline: 0.55-0.70
-
 ## RBPs Evaluated
 
 Eight RNA-binding proteins across K562 and HepG2 cell lines:
@@ -191,20 +184,9 @@ Detailed documentation for each component:
 - Flash Attention for efficient training
 - SLURM for cluster job submission
 
-## Citation
-
-If you use this code, please cite the relevant papers:
-- DNABERT-2: [Insert citation]
-- ESM-2: [Insert citation]
-- CLIP-seq data: [Insert citation]
-
-## License
-
-[Specify your license]
-
 ## Contact
 
-[Your contact information]
+maximilianl.lewinfr@gmail.com
 
 ## Acknowledgments
 

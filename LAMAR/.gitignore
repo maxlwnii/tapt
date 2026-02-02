@@ -1,0 +1,16 @@
+data/
+dependencies_DNALM/
+preprocess/*.txt
+preprocess/__pycache__/
+preprocess/*.json
+LAMAR/*
+# allow evalEmbeddings scripts and contents
+!LAMAR/evalEmbeddings/
+!LAMAR/evalEmbeddings/**
+
+# ignore full LLM_eval directory
+LLM_eval/
+DNABERT_2_project/
+eclip/
+mRNABench/
+pretrain/

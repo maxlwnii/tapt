@@ -1,19 +1,181 @@
-data/
-dependencies_DNALM/
+# Data files
+*.fa
+*.fasta
+*.h5
+*.hdf5
+*.bed
+*.bam
+*.bai
+*.vcf
+*.gz
+*.zip
+*.tar
+*.bz2
+
+# Arrow/Parquet files (HuggingFace datasets)
+*.arrow
+*.parquet
+data-*.arrow
+cache-*.arrow
+
+# Model checkpoints and weights
+models/
+model/
+weights/
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.h5
+pytorch_model.bin
+model.safetensors
+
+# Output directories
+output/
+outputs/
+results/
+checkpoints/
+saving_model/
+logs_dnabert2/
+logs/
+*.log
+*.out
+*.err
+
+# Specific data directories
+data/clip_training_data_uhl/
+data/eclip_koo/
+data/finetune_data_koo/
+data/rel_data/*.fa
+data/rel_data/*.bed
+data/eval_clip_data/plots/*.txt
+
+# LAMAR specific exclusions
+LAMAR/models/finetuned_*/
+LAMAR/models/models_koo/
+LAMAR/evalEmbeddings/results*/
+LAMAR/evalEmbeddings/models_*/
+LAMAR/evalEmbeddings/logs/
+LAMAR/evalEmbeddings/plots/
+LAMAR/evalEmbeddings/depMaps/dep_maps_*/
+LAMAR/evalEmbeddings/depMaps/test_output/
+LAMAR/visualisation/saliency_output/
+LAMAR/weights
+LAMAR/finetune_scripts/plots/
+LAMAR/finetune_scripts/plots_auprc/
+
+# DNABERT2 specific exclusions
+DNBERT2/output/
+DNBERT2/logs_dnabert2/
+DNBERT2/images/*.png
+DNBERT2/images/*.jpg
+DNBERT2/images/*.pdf
+DNBERT2/data/*/
+DNBERT2/pretrain/
+
+# Preprocess outputs
+preprocess/preprocessed_data_*.txt
+preprocess/preprocessed_data_*.json
 preprocess/*.txt
-preprocess/__pycache__/
 preprocess/*.json
-LAMAR/*
-# allow evalEmbeddings scripts and contents
-!LAMAR/evalEmbeddings/
-!LAMAR/evalEmbeddings/**
-# ignore SLURM batch job scripts (temporary, generated locally)
-LAMAR/evalEmbeddings/*.slurm
-LAMAR/finetune_scripts/**/*.slurm
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# IDEs
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Slurm job files (keep templates, ignore generated ones)
 *.slurm
-# ignore full LLM_eval directory
+!*template*.slurm
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+.cache/
+
+# Large evaluation files
+*.npy
+*.npz
+
+# Git
+.git/
+.gitattributes
+
+# Conda/pip
+*.egg-info/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Documentation build files
+_build/
+docs/_build/
+
+# Specific large files to ignore
+hg38.fa
+*.genome.fa
+
+# Exclude other project directories (not part of this thesis)
+DNA-Language-Model-Evaluation/
 LLM_eval/
-DNABERT_2_project/
-eclip/
+dependencies_DNALM/
 mRNABench/
-pretrain/
+p_eickhoff_isoscore/
+
+# Old structure (being reorganized)
+doctest/
+evalEmbed/
+src/

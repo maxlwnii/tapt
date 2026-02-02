@@ -1,8 +1,0 @@
-# This eclip peak is inside chr1:100-110
-chr1	102	105	 .	4.5
-chr1	500	550	.	8.1
-chr1    102 103 .   2.3
-# This eclip peak is inside chrX:50-55
-chrX	51	54	.	9.0
-# This is a non-standard chromosome and will be filtered
-chrM	10	20	.	2.0

@@ -34,7 +34,8 @@ else:
 
 # LAMAR configuration
 model_max_length = 512  # Adjust based on your sequence length
-batch_size = 16  # Reduced for memory efficiency with embeddings
+extraction_batch_size = 16  # Reduced for memory efficiency during embedding extraction
+downstream_batch_size = 256 # Batch size for CNN training (matches NT paper)
 datalen = 200
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"LAMAR will use: {device}")
@@ -110,7 +111,7 @@ loss = tf.keras.losses.BinaryCrossentropy(from_logits=False, label_smoothing=0)
 # Load LAMAR model once (outside loop)
 print('Loading LAMAR model')
 tokenizer = AutoTokenizer.from_pretrained(
-    "/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/tokenizer/single_nucleotide/",
+    "/home/fr/fr_fr/fr_ml642/Thesis/pretrain/saving_model/tapt_lamar/checkpoint-100000/",
     model_max_length=model_max_length
 )
 config = AutoConfig.from_pretrained(
@@ -128,7 +129,7 @@ config = AutoConfig.from_pretrained(
 lamar_model = EsmForMaskedLM(config)
 
 # Load pretrained weights
-weights_path = "/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/weights"  # Update with your checkpoint
+weights_path = "/home/fr/fr_fr/fr_ml642/Thesis/pretrain/saving_model/tapt_lamar/checkpoint-100000"  # Update for TAPT checkpoint
 if os.path.isdir(weights_path):
     # If it's a directory with model.safetensors
     weights_file = os.path.join(weights_path, "model.safetensors")
@@ -182,11 +183,12 @@ for layer in (11, 5):  # Layer 11 (last) and layer 5 (middle)
             # Convert one-hot to sequences
             sequence = data['X_'+label][()]
             sequence = np.transpose(sequence,(0,2,1))
-            # Convert one-hot to DNA strings
+            # Convert one-hot (first 4 channels) to DNA strings
             seq_strings = []
             for seq in sequence:
                 bases = ['A', 'C', 'G', 'T']
-                dna = ''.join([bases[np.argmax(pos)] for pos in seq])
+                # Only use the first 4 channels for the argmax to avoid picking extra features
+                dna = ''.join([bases[np.argmax(pos[:4])] for pos in seq])
                 seq_strings.append(dna)
             
             target = data['Y_'+label][()]
@@ -198,8 +200,8 @@ for layer in (11, 5):  # Layer 11 (last) and layer 5 (middle)
             # Pass through model for embeddings
             total_embed = []
             with torch.no_grad():
-                for i in tqdm(range(0, len(seq_strings), batch_size)):
-                    batch_seqs = seq_strings[i:i+batch_size]
+                for i in tqdm(range(0, len(seq_strings), extraction_batch_size)):
+                    batch_seqs = seq_strings[i:i+extraction_batch_size]
                     # Tokenize
                     tokens = tokenizer(
                         batch_seqs,
@@ -224,19 +226,19 @@ for layer in (11, 5):  # Layer 11 (last) and layer 5 (middle)
             #create TF dataset from embeddings          
             with tf.device("CPU"):
                 dataset[label] = tf.data.Dataset.from_tensor_slices(
-                                    (total_embed,data['Y_'+label][()])).shuffle(256*4).batch(256)
+                                    (total_embed,data['Y_'+label][()])).shuffle(256*4).batch(downstream_batch_size)
     
         # Get actual input length from first embedding (use train set)
         actual_input_len = embeddings_dict['train'][0].shape[0]
         print(f'Embedding shape: ({actual_input_len}, 768)')
         
-        print(f'Training CNN for {tf_name} with LAMAR Layer {layer} embeddings')
+        print(f'Training CNN for {tf_name} with LAMAR TAPT Layer {layer} embeddings')
         for i in range(5):  # 5 repeats for robustness
             
             optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
             os.makedirs('/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/evalEmbeddings/models', exist_ok=True)
             checkpoint = tf.keras.callbacks.ModelCheckpoint(
-                                            f'/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/evalEmbeddings/models/layer{layer}_{tf_name}_rep{i}.h5',
+                                            f'/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/evalEmbeddings/models/tapt_layer{layer}_{tf_name}_rep{i}.h5',
                                             monitor='val_loss',
                                             save_best_only=True,
                                             mode = 'min',
@@ -250,7 +252,6 @@ for layer in (11, 5):  # Layer 11 (last) and layer 5 (middle)
                         optimizer=optimizer)
             
             result = cnn_model.fit(dataset['train'],
-                batch_size=32   ,
                 validation_data=dataset['valid'],
                 epochs=100,
                 verbose=2,
@@ -261,11 +262,11 @@ for layer in (11, 5):  # Layer 11 (last) and layer 5 (middle)
             test_accuracy.append(acc)
             test_auroc.append(roc)
             test_aupr.append(pr)
-            model_list.append(f'LAMAR Layer{layer} CNN')
+            model_list.append(f'LAMAR TAPT Layer{layer} CNN')
     
     df = pd.DataFrame(list(zip(tf_list, test_accuracy, test_auroc, test_aupr,model_list)),
                columns =['TF','Accuracy','AUROC','AUPR','Model'])
     os.makedirs('/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/evalEmbeddings/results', exist_ok=True)
-    df.to_csv(f'/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/evalEmbeddings/results/LAMAR_layer{layer}_perf.csv')
+    df.to_csv(f'/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/evalEmbeddings/results/LAMAR_tapt_layer{layer}_perf.csv')
     print(f'Results saved for layer {layer}')
     print(df.groupby('Model')[['Accuracy', 'AUROC', 'AUPR']].mean())

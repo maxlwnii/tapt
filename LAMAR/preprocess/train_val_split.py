@@ -27,5 +27,5 @@ def train_val_split(metadata_path):
         json.dump(val_data, f, indent=2)
 
 if __name__ == "__main__":
-    input_path = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/preprocess/preprocessed_data_256_metadata.json"
+    input_path = "/home/fr/fr_fr/fr_ml642/Thesis/preprocess/preprocessed_data_metadata.json"
     train_val_split(input_path)

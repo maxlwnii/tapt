@@ -1,0 +1,1 @@
+cd /gpfs/bwfor/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/evalEmbeddings/depMaps && python compute_dep_maps.py --model_path /home/fr/fr_fr/fr_ml642/Thesis/pretrain/saving_model/tapt_lamar/checkpoint-100000/model.safetensors --sequence ATGCATGC --output_dir test_output --window_size 1 --step_size 1 --n_steps 10

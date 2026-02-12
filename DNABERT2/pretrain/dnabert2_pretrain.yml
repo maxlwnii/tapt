@@ -1,0 +1,32 @@
+name: dnabert2_pretrain
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pip
+  - cudatoolkit=11.7  # adjust to your system (optional)
+  - pip:
+    - torch
+    - transformers
+    - datasets
+    - accelerate
+    - tokenizers
+    - safetensors
+    - einops
+    - tqdm
+    - scikit-learn
+    - pandas
+    - h5py
+    - huggingface_hub
+    - sentencepiece
+    - optuna
+    - wandb
+    - tensorboard
+    - sacrebleu
+    - sentencepiece
+
+# Notes:
+# - Replace or remove `cudatoolkit` line if you prefer CPU-only or need a different CUDA version.
+# - After creation, activate with: `conda activate dnabert2_pretrain`.
+# - I list `torch` in pip section so that pip resolves the best wheel for your platform (CUDA vs CPU).

@@ -35,10 +35,10 @@ else:
     print("WARNING: CUDA not available for PyTorch! LAMAR will use CPU (slow)")
 
 # Configuration
-data_dir = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/data/clip_training_data"
-output_dir = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/evalEmbeddings/results_clip_data"
+data_dir = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/data/clip_training_data_uhl"
+output_dir = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/evalEmbeddings/results/results_clip_data_uhl"
 # Use workspace to avoid home directory quota limits
-model_save_dir = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/LAMAR_outputs/models_clip_data"
+model_save_dir = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/models/models_clip_data_uhl"
 os.makedirs(output_dir, exist_ok=True)
 os.makedirs(model_save_dir, exist_ok=True)
 
@@ -48,16 +48,16 @@ downstream_batch_size = 256
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Use tokenizer from TAPT checkpoint (same vocab as Pretrained)
-tokenizer_path = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/pretrain/saving_model/tapt_lamar/checkpoint-100000/"
-config_path = "/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/config/config_150M.json"
+tokenizer_path = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/src/pretrain/saving_model/tapt_lamar/checkpoint-98000"
+config_path = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/config/config_150M.json"
 
 # Model Variants (Skip Pretrained - already completed)
 variants = {
-    "TAPT": "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/pretrain/saving_model/tapt_lamar/checkpoint-100000/model.safetensors",
+    "TAPT": "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/src/pretrain/saving_model/tapt_lamar/checkpoint-98000/model.safetensors",
     "Random": None
 }
 
-target_layers = [11, 5]
+target_layers = [11]  # Evaluate only final layer for speed
 
 def load_data(rbp_name):
     pos_file = os.path.join(data_dir, f"{rbp_name}.positives.fa")

@@ -24,7 +24,7 @@ inner_lamar = os.path.join(project_root, 'LAMAR')
 from sklearn.model_selection import KFold
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score, roc_auc_score, average_precision_score
 
-TOKENIZER_PATH = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/pretrain/saving_model/tapt_lamar/checkpoint-100000/"
+TOKENIZER_PATH = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/src/pretrain/saving_model/tapt_lamar/checkpoint-100000/"
 
 def compute_metrics(p):
     predictions, labels = p
@@ -195,6 +195,7 @@ def main():
         parser.add_argument("--logging_steps", type=int, default=100, help="Logging interval in steps")
         parser.add_argument("--fp16", action='store_true', help="Enable fp16 training")
         parser.add_argument("--tokenizer_path", type=str, default=TOKENIZER_PATH, help="Tokenizer path override")
+        parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay for AdamW")
         
         args = parser.parse_args()
         
@@ -471,7 +472,7 @@ def main():
             per_device_train_batch_size=args.batch_size if hasattr(args, 'batch_size') else 4,
             per_device_eval_batch_size=1,
             learning_rate=args.lr if hasattr(args, 'lr') else 5e-5,
-            weight_decay=0.01,
+            weight_decay=args.weight_decay if hasattr(args, 'weight_decay') else 0.01,
             adam_beta1=0.9,
             adam_beta2=0.98,
             adam_epsilon=1e-8,
@@ -556,7 +557,7 @@ def main():
                         per_device_train_batch_size=args.batch_size,
                         per_device_eval_batch_size=2,
                         num_train_epochs=args.warmup_epochs,
-                        weight_decay=0.01,
+                        weight_decay=args.weight_decay if hasattr(args, 'weight_decay') else 0.01,
                         load_best_model_at_end=False,
                         save_total_limit=1,
                         logging_dir=f"{fold_output_dir}/warmup/logs",
@@ -686,7 +687,7 @@ def main():
                     per_device_train_batch_size=args.batch_size,
                     per_device_eval_batch_size=2,
                     num_train_epochs=args.warmup_epochs,
-                    weight_decay=0.01,
+                    weight_decay=args.weight_decay if hasattr(args, 'weight_decay') else 0.01,
                     load_best_model_at_end=False,
                     save_total_limit=1,
                     logging_dir=f"{args.output_dir}/warmup/logs",

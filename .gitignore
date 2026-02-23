@@ -179,3 +179,19 @@ p_eickhoff_isoscore/
 doctest/
 evalEmbed/
 src/
+
+# Ignore HPO outputs and summary files
+*hpo*
+best_hpo_params.json
+
+# Ignore generated dataset files and large CSV/TSV dumps
+*.csv
+*.tsv
+
+# Keep only scripts and plots tracked; ignore top-level data and outputs
+data/
+logs/
+models/
+output/
+outputs/
+plots/*/*.tmp

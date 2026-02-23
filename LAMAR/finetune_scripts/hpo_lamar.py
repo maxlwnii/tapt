@@ -6,8 +6,8 @@ warmup ratio, epochs, gradient accumulation, freeze_encoder, and warmup_epochs.
 
 Supports both:
   - Koo data   (data/finetune_data_koo/<RBP>/  with train.csv, dev.csv, test.csv)
-  - CSV data   (data/finetune_data_koo/<RBP>/  with train.csv, dev.csv, test.csv)
-  Both currently point to the same eclip_koo-derived CSV data.
+  - CSV data   (DNABERT2/data/<RBP>/         with train.csv, dev.csv, test.csv)
+  These are DIFFERENT datasets with DIFFERENT RBPs.
 
 Usage:
   python hpo_lamar.py \
@@ -65,11 +65,22 @@ THESIS_ROOT = os.environ.get(
 )
 
 DATASET_PATHS = {
-    "koo": os.path.join(THESIS_ROOT, "data", "finetune_data_koo"),
-    "csv": os.path.join(THESIS_ROOT, "data", "finetune_data_koo"),
+    "koo": os.path.join(THESIS_ROOT, "data", "finetune_data_koo"),  # eclip_koo data
+    "csv": os.path.join(THESIS_ROOT, "DNABERT2", "data"),          # CSV IDR data
 }
 
-RBPS = [
+RBPS_CSV = [
+    "GTF2F1_K562_IDR",
+    "HNRNPL_K562_IDR",
+    "HNRNPM_HepG2_IDR",
+    "ILF3_HepG2_IDR",
+    "KHSRP_K562_IDR",
+    "MATR3_K562_IDR",
+    "PTBP1_HepG2_IDR",
+    "QKI_K562_IDR",
+]
+
+RBPS_KOO = [
     "HNRNPK_K562_200",
     "PTBP1_K562_200",
     "PUM2_K562_200",
@@ -82,8 +93,10 @@ RBPS = [
     "U2AF1_K562_200",
 ]
 
+RBPS = sorted(set(RBPS_CSV + RBPS_KOO))  # union for argparse choices
+
 DEFAULT_TOKENIZER = os.path.join(
-    THESIS_ROOT, "pretrain", "saving_model", "tapt_lamar", "checkpoint-100000"
+    THESIS_ROOT, "LAMAR", "src", "pretrain", "saving_model", "tapt_lamar", "checkpoint-100000"
 )
 
 
@@ -269,7 +282,7 @@ def make_objective(args, tokenizer, dataset):
             adam_epsilon=1e-8,
             max_grad_norm=1.0,
             fp16=args.fp16,
-            eval_strategy="epoch",
+            evaluation_strategy="epoch",
             save_strategy="epoch",
             logging_steps=50,
             save_total_limit=1,
@@ -293,7 +306,7 @@ def make_objective(args, tokenizer, dataset):
                 per_device_eval_batch_size=16,
                 learning_rate=lr,
                 weight_decay=weight_decay,
-                eval_strategy="epoch",
+                evaluation_strategy="epoch",
                 save_strategy="epoch",
                 save_total_limit=1,
                 load_best_model_at_end=False,
@@ -355,7 +368,7 @@ def parse_args():
     )
     p.add_argument("--rbp_name", type=str, required=True, choices=RBPS)
     p.add_argument("--dataset", type=str, required=True, choices=["koo", "csv"],
-                   help="Dataset: 'koo' (eclip_koo CSV) or 'csv' (same data, both point to finetune_data_koo)")
+                   help="Dataset: 'koo' (eclip_koo CSV) or 'csv' (DNABERT2/data IDR CSV)")
     p.add_argument("--pretrain_path", type=str, default="",
                    help="Path to pretrained encoder weights (safetensors)")
     p.add_argument("--tokenizer_path", type=str, default=DEFAULT_TOKENIZER,

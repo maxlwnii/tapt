@@ -46,17 +46,20 @@ LAMAR_PRETRAINED_WEIGHTS="$LAMAR_DIR/weights"
 # Tokenizer
 TOKENIZER_PATH="$LAMAR_DIR/src/pretrain/saving_model/tapt_lamar/checkpoint-100000"
 if [[ ! -d "$TOKENIZER_PATH" ]]; then
-    TOKENIZER_PATH="$THESIS/pretrain/saving_model/tapt_lamar/checkpoint-100000"
+    TOKENIZER_PATH="$THESIS/LAMAR/src/pretrain/saving_model/tapt_lamar/checkpoint-100000"
 fi
 
 export THESIS_ROOT="$THESIS"
 export TOKENIZERS_PARALLELISM=false
 
-RBP="U2AF1_K562_200"
+RBP_KOO="U2AF1_K562_200"    # smallest koo dataset
+RBP_CSV="QKI_K562_IDR"      # smallest csv dataset
+RBP="$RBP_KOO"              # default for direct finetune tests
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  LAMAR Fine-tuning — Smoke Test (3 variants)"
-echo "  RBP         : $RBP"
+echo "  RBP koo     : $RBP_KOO"
+echo "  RBP csv     : $RBP_CSV"
 echo "  LAMAR_512   : $LAMAR_512_WEIGHTS"
 echo "  Pretrained  : $LAMAR_PRETRAINED_WEIGHTS"
 echo "  Random      : (no weights)"
@@ -110,8 +113,8 @@ echo ""
 echo "─── TEST $TOTAL: Finetune LAMAR pretrained on CSV ──────"
 
 python3 "$FINETUNE_SCRIPT" \
-    --rbp_name "$RBP" \
-    --data_path "$THESIS/data/finetune_data_koo/$RBP" \
+    --rbp_name "$RBP_CSV" \
+    --data_path "$THESIS/DNABERT2/data/$RBP_CSV" \
     --output_dir "$OUTPUT_DIR/ft_pretrained_csv" \
     --pretrain_path "$LAMAR_PRETRAINED_WEIGHTS" \
     --tokenizer_path "$TOKENIZER_PATH" \
@@ -147,7 +150,7 @@ echo ""
 echo "─── TEST $TOTAL: HPO LAMAR_512 on Koo (2 trials) ───────"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset koo \
+    --rbp_name "$RBP_KOO" --dataset koo \
     --pretrain_path "$LAMAR_512_WEIGHTS" \
     --tokenizer_path "$TOKENIZER_PATH" \
     --output_dir "$OUTPUT_DIR/hpo_lamar512_koo" \
@@ -163,9 +166,8 @@ echo ""
 echo "─── TEST $TOTAL: HPO LAMAR pretrained on CSV (2 trials) ─"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset csv \
+    --rbp_name "$RBP_CSV" --dataset csv \
     --pretrain_path "$LAMAR_PRETRAINED_WEIGHTS" \
-    --tokenizer_path "$TOKENIZER_PATH" \
     --output_dir "$OUTPUT_DIR/hpo_pretrained_csv" \
     --n_trials 2 --max_train_samples 200 $FP16 \
 && { echo "  ✓ TEST $TOTAL passed"; PASS=$((PASS+1)); } \
@@ -179,7 +181,7 @@ echo ""
 echo "─── TEST $TOTAL: HPO LAMAR RANDOM on Koo (2 trials) ────"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset koo \
+    --rbp_name "$RBP_KOO" --dataset koo \
     --tokenizer_path "$TOKENIZER_PATH" \
     --output_dir "$OUTPUT_DIR/hpo_random_koo" \
     --n_trials 2 --max_train_samples 200 $FP16 \
@@ -194,9 +196,8 @@ echo ""
 echo "─── TEST $TOTAL: HPO LAMAR_512 on CSV (2 trials) ───────"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset csv \
+    --rbp_name "$RBP_CSV" --dataset csv \
     --pretrain_path "$LAMAR_512_WEIGHTS" \
-    --tokenizer_path "$TOKENIZER_PATH" \
     --output_dir "$OUTPUT_DIR/hpo_lamar512_csv" \
     --n_trials 2 --max_train_samples 200 $FP16 \
 && { echo "  ✓ TEST $TOTAL passed"; PASS=$((PASS+1)); } \
@@ -210,7 +211,7 @@ echo ""
 echo "─── TEST $TOTAL: HPO LAMAR RANDOM on CSV (2 trials) ────"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset csv \
+    --rbp_name "$RBP_CSV" --dataset csv \
     --tokenizer_path "$TOKENIZER_PATH" \
     --output_dir "$OUTPUT_DIR/hpo_random_csv" \
     --n_trials 2 --max_train_samples 200 $FP16 \
@@ -225,9 +226,8 @@ echo ""
 echo "─── TEST $TOTAL: HPO LAMAR pretrained on Koo (2 trials) ─"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset koo \
+    --rbp_name "$RBP_KOO" --dataset koo \
     --pretrain_path "$LAMAR_PRETRAINED_WEIGHTS" \
-    --tokenizer_path "$TOKENIZER_PATH" \
     --output_dir "$OUTPUT_DIR/hpo_pretrained_koo" \
     --n_trials 2 --max_train_samples 200 $FP16 \
 && { echo "  ✓ TEST $TOTAL passed"; PASS=$((PASS+1)); } \
@@ -244,7 +244,8 @@ ARTEFACT_OK=true
 
 for variant in lamar512 pretrained random; do
     for ds in koo csv; do
-        summary="$OUTPUT_DIR/hpo_${variant}_${ds}/${RBP}_${ds}/hpo_summary.json"
+        if [[ "$ds" == "koo" ]]; then _RBP="$RBP_KOO"; else _RBP="$RBP_CSV"; fi
+        summary="$OUTPUT_DIR/hpo_${variant}_${ds}/${_RBP}_${ds}/hpo_summary.json"
         if [[ -f "$summary" ]]; then
             echo "  ✓ HPO ${variant} ${ds} summary exists"
             python3 -c "import json; d=json.load(open('$summary')); print(f'    Best AUC: {d[\"best_value\"]:.4f}')"

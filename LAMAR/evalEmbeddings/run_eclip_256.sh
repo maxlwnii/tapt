@@ -7,8 +7,8 @@
 #SBATCH --gres=gpu:A40:1
 #SBATCH --time=72:00:00
 #SBATCH --mem=128G
-#SBATCH --output=logs/lamar_clip_eval_%j.out
-#SBATCH --error=logs/lamar_clip_eval_%j.err
+#SBATCH --output=logs/lamar_clip_256_%j.out
+#SBATCH --error=logs/lamar_clip_256_%j.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=maximilian.lewinfr@gmail.com
 
@@ -41,6 +41,6 @@ python -c "import torch, tensorflow as tf; print('Torch CUDA:', torch.cuda.is_av
 
 # Run
 echo "Starting LAMAR CLIP Evaluation"
-python3 LAMAR_CNN_clip_data.py
+python3 LAMAR_CNN_256.py
 
 echo "Job finished at: $(date)"

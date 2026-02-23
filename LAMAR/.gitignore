@@ -14,3 +14,17 @@ DNABERT_2_project/
 eclip/
 mRNABench/
 pretrain/
+
+# Ignore HPO summary and search outputs
+*hpo*
+best_hpo_params.json
+
+# Ignore large CSV/TSV dataset dumps
+*.csv
+*.tsv
+
+# Keep only scripts and plots tracked. Ignore data, logs, outputs under LAMAR
+LAMAR/data/
+LAMAR/logs/
+LAMAR/output/
+LAMAR/outputs/

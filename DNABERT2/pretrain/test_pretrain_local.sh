@@ -2,18 +2,34 @@
 set -euo pipefail
 
 # ============================================================
-#  DNABERT2 TAPT — Local smoke test
+#  DNABERT2 TAPT — Comprehensive Local Smoke Test
 #
-#  Run this on a machine with a small GPU (or even CPU) to
-#  verify that the script, data loading, tokenisation, and
-#  adaptive masking all work correctly before submitting the
-#  full SLURM job.
+#  Tests EVERY parameter used in the real SLURM pretraining
+#  scripts (pretrain_dnabert2_full.slurm and
+#  pretrain_dnabert2_standard_mlm.slurm) on a tiny data
+#  subset so failures surface *before* a 48-hour A100 job.
 #
-#  Duration: ~2–5 minutes on a consumer GPU, ~10 min on CPU.
+#  Duration: ~5–10 minutes on a consumer GPU, ~15 min on CPU.
 # ============================================================
 
+# ── Conda environment (match SLURM scripts) ──────────────────
+# Activate the dnabert2 env.  On HPC nodes the conda init may
+# not be sourced automatically, so we do it explicitly.
+CONDA_ENV="/home/fr/fr_fr/fr_ml642/.conda/envs/dnabert2"
+if [[ -d "$CONDA_ENV" ]]; then
+    if command -v conda &>/dev/null; then
+        echo "Activating conda env: dnabert2"
+        # shellcheck disable=SC1091
+        source "$(conda info --base)/etc/profile.d/conda.sh" 2>/dev/null || true
+        conda activate "$CONDA_ENV"
+    else
+        # fallback: try the standard miniforge path
+        source /gpfs/bwfor/software/common/devel/miniforge/24.9.2-0/etc/profile.d/conda.sh 2>/dev/null || true
+        conda activate "$CONDA_ENV"
+    fi
+fi
+
 # ── Paths (adjust to your machine) ────────────────────────────
-# Try workspace path first, fall back to home-dir path
 if [[ -d "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis" ]]; then
     BASE="/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis"
 elif [[ -d "/home/fr/fr_fr/fr_ml642/Thesis" ]]; then
@@ -28,11 +44,15 @@ TRAIN_FILE="$BASE/preprocess/preprocessed_data_metadata_train.json"
 VAL_FILE="$BASE/preprocess/preprocessed_data_metadata_val.json"
 OUTPUT_DIR="$BASE/DNABERT2/pretrain/models/test_local"
 
+export PYTHONPATH="$BASE:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=8
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  DNABERT2 TAPT — Local smoke test"
-echo "  BASE: $BASE"
+echo "  DNABERT2 TAPT — Comprehensive smoke test"
+echo "  BASE   : $BASE"
+echo "  Python : $(which python3)"
+echo "  Conda  : ${CONDA_DEFAULT_ENV:-unknown}"
 echo "═══════════════════════════════════════════════════════════"
 
 # ── Verify files exist ────────────────────────────────────────
@@ -43,27 +63,73 @@ for f in "$SCRIPT" "$TRAIN_FILE" "$VAL_FILE"; do
     fi
 done
 
-# ── CUDA info ─────────────────────────────────────────────────
+# ── Python & package sanity ───────────────────────────────────
+echo ""
+echo "─── Package versions ─────────────────────────────────────"
+python3 -c "
+import sys
+print(f'  Python       : {sys.version}')
+import torch; print(f'  PyTorch      : {torch.__version__}')
+import transformers; print(f'  transformers : {transformers.__version__}')
+import datasets; print(f'  datasets     : {datasets.__version__}')
+"
+
+# ── CUDA info (mirrors SLURM sanity check exactly) ────────────
+echo ""
+echo "─── CUDA sanity check ────────────────────────────────────"
 python3 -c "
 import torch
 print(f'  CUDA available : {torch.cuda.is_available()}')
+print(f'  GPU count      : {torch.cuda.device_count()}')
 if torch.cuda.is_available():
-    print(f'  GPU            : {torch.cuda.get_device_name(0)}')
-    mem = torch.cuda.get_device_properties(0).total_mem / 1e9
-    print(f'  VRAM           : {mem:.1f} GB')
+    print(f'  GPU name       : {torch.cuda.get_device_name(0)}')
+    print(f'  GPU memory     : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
 else:
     print('  Running on CPU (expect slower execution)')
 " 2>/dev/null || echo "  (could not detect GPU)"
+
+# ── Detect GPU for fp16 ──────────────────────────────────────
+HAS_GPU=$(python3 -c "import torch; print(int(torch.cuda.is_available()))" 2>/dev/null || echo "0")
+FP16_FLAG=""
+if [[ "$HAS_GPU" == "1" ]]; then
+    FP16_FLAG="--fp16"
+fi
 
 # ── Clean previous test output ────────────────────────────────
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
+# ─────────────────────────────────────────────────────────────
+#  NOTE ON PARAMETER MAPPING
+#
+#  Every real SLURM flag is replicated below.  The ONLY
+#  intentional differences for the smoke test are:
+#
+#   Real SLURM              Smoke test
+#   ─────────────────────── ──────────────────────────────
+#   --num_train_epochs 10   --max_steps 20
+#   --per_device_*_bs 32/64 --per_device_*_bs 4
+#   --grad_accum_steps 2    --gradient_accumulation_steps 1
+#   (no sample limit)       --max_train_samples 200
+#                           --max_eval_samples 50
+#   --eval_strategy epoch   --eval_strategy steps (+ eval/save_steps 10)
+#   --logging_steps 50      --logging_steps 5
+#   --save_total_limit 5    --save_total_limit 2
+#   --report_to tensorboard --report_to none
+#   --dataloader_num_w 4    --dataloader_num_workers 2
+#
+#  All other parameters are IDENTICAL to the real jobs.
+# ─────────────────────────────────────────────────────────────
+
+PASS=0
+FAIL=0
+
 # ═══════════════════════════════════════════════════════════════
-#  TEST 1: Adaptive masking (eCLIP-aware)
+#  TEST 1: Adaptive masking — ALL real flags
+#          (mirrors pretrain_dnabert2_full.slurm)
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "─── TEST 1: Adaptive masking collator ────────────────────"
+echo "─── TEST 1: Adaptive masking (full param mirror) ─────────"
 echo ""
 
 python3 "$SCRIPT" \
@@ -74,12 +140,13 @@ python3 "$SCRIPT" \
     --validation_file "$VAL_FILE" \
     --max_train_samples 200 \
     --max_eval_samples 50 \
-    --preprocessing_num_workers 4 \
+    --preprocessing_num_workers 2 \
     \
     --use_adaptive_masking \
     --target_mlm_prob 0.15 \
     --eclip_mlm_lo 0.20 \
     --eclip_mlm_hi 0.25 \
+    --min_flanking_prob 0.05 \
     \
     --output_dir "${OUTPUT_DIR}/adaptive" \
     --max_steps 20 \
@@ -87,26 +154,36 @@ python3 "$SCRIPT" \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 1 \
     --learning_rate 3e-5 \
-    --warmup_ratio 0.1 \
-    \
-    --save_steps 10 \
-    --eval_steps 10 \
-    --logging_steps 5 \
-    --save_total_limit 1 \
+    --weight_decay 0.01 \
+    --warmup_ratio 0.05 \
+    --lr_scheduler_type cosine \
+    --max_grad_norm 1.0 \
+    --optim adamw_torch \
     \
     --early_stopping_patience 3 \
-    --dataloader_num_workers 0 \
+    \
+    --eval_strategy steps \
+    --eval_steps 10 \
+    --save_steps 10 \
+    --logging_steps 5 \
+    --save_total_limit 2 \
+    \
+    $FP16_FLAG \
+    --gradient_checkpointing \
+    --dataloader_num_workers 2 \
+    --dataloader_pin_memory \
+    \
     --seed 42 \
-    --report_to none
-
-echo ""
-echo "  ✓ TEST 1 passed (adaptive masking)"
-echo ""
+    --report_to none \
+&& { echo "  ✓ TEST 1 passed (adaptive masking, full params)"; PASS=$((PASS+1)); } \
+|| { echo "  ✗ TEST 1 FAILED"; FAIL=$((FAIL+1)); }
 
 # ═══════════════════════════════════════════════════════════════
-#  TEST 2: Standard masking (uniform 15%)
+#  TEST 2: Standard masking — ALL real flags
+#          (mirrors pretrain_dnabert2_standard_mlm.slurm)
 # ═══════════════════════════════════════════════════════════════
-echo "─── TEST 2: Standard masking collator ────────────────────"
+echo ""
+echo "─── TEST 2: Standard masking (full param mirror) ─────────"
 echo ""
 
 python3 "$SCRIPT" \
@@ -117,7 +194,9 @@ python3 "$SCRIPT" \
     --validation_file "$VAL_FILE" \
     --max_train_samples 200 \
     --max_eval_samples 50 \
-    --preprocessing_num_workers 1 \
+    --preprocessing_num_workers 2 \
+    \
+    --target_mlm_prob 0.15 \
     \
     --output_dir "${OUTPUT_DIR}/standard" \
     --max_steps 20 \
@@ -125,29 +204,144 @@ python3 "$SCRIPT" \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 1 \
     --learning_rate 3e-5 \
-    --warmup_ratio 0.1 \
-    \
-    --save_steps 10 \
-    --eval_steps 10 \
-    --logging_steps 5 \
-    --save_total_limit 1 \
+    --weight_decay 0.01 \
+    --warmup_ratio 0.05 \
+    --lr_scheduler_type cosine \
+    --max_grad_norm 1.0 \
+    --optim adamw_torch \
     \
     --early_stopping_patience 3 \
-    --dataloader_num_workers 0 \
+    \
+    --eval_strategy steps \
+    --eval_steps 10 \
+    --save_steps 10 \
+    --logging_steps 5 \
+    --save_total_limit 2 \
+    \
+    $FP16_FLAG \
+    --gradient_checkpointing \
+    --dataloader_num_workers 2 \
+    --dataloader_pin_memory \
+    \
     --seed 42 \
-    --report_to none
-
-echo ""
-echo "  ✓ TEST 2 passed (standard masking)"
-echo ""
+    --report_to none \
+&& { echo "  ✓ TEST 2 passed (standard masking, full params)"; PASS=$((PASS+1)); } \
+|| { echo "  ✗ TEST 2 FAILED"; FAIL=$((FAIL+1)); }
 
 # ═══════════════════════════════════════════════════════════════
-#  TEST 3: Verify masking distribution
+#  TEST 3: Adaptive masking WITHOUT gradient checkpointing
+#          (fallback test — ensure training works both ways)
 # ═══════════════════════════════════════════════════════════════
-echo "─── TEST 3: Verify masking distribution ──────────────────"
+echo ""
+echo "─── TEST 3: Adaptive masking without grad checkpoint ─────"
 echo ""
 
-BASE="$BASE" SCRIPT="$SCRIPT" python3 - <<'PYEOF'
+python3 "$SCRIPT" \
+    --model_name_or_path zhihan1996/DNABERT-2-117M \
+    --max_seq_length 512 \
+    \
+    --train_file "$TRAIN_FILE" \
+    --validation_file "$VAL_FILE" \
+    --max_train_samples 100 \
+    --max_eval_samples 30 \
+    --preprocessing_num_workers 2 \
+    \
+    --use_adaptive_masking \
+    --target_mlm_prob 0.15 \
+    --eclip_mlm_lo 0.20 \
+    --eclip_mlm_hi 0.25 \
+    --min_flanking_prob 0.05 \
+    \
+    --output_dir "${OUTPUT_DIR}/adaptive_no_gc" \
+    --max_steps 10 \
+    --per_device_train_batch_size 4 \
+    --per_device_eval_batch_size 4 \
+    --gradient_accumulation_steps 1 \
+    --learning_rate 3e-5 \
+    --weight_decay 0.01 \
+    --warmup_ratio 0.05 \
+    --lr_scheduler_type cosine \
+    --max_grad_norm 1.0 \
+    --optim adamw_torch \
+    \
+    --early_stopping_patience 3 \
+    \
+    --eval_strategy steps \
+    --eval_steps 10 \
+    --save_steps 10 \
+    --logging_steps 5 \
+    --save_total_limit 2 \
+    \
+    $FP16_FLAG \
+    --dataloader_num_workers 2 \
+    --dataloader_pin_memory \
+    \
+    --seed 42 \
+    --report_to none \
+&& { echo "  ✓ TEST 3 passed (no gradient checkpointing)"; PASS=$((PASS+1)); } \
+|| { echo "  ✗ TEST 3 FAILED"; FAIL=$((FAIL+1)); }
+
+# ═══════════════════════════════════════════════════════════════
+#  TEST 4: Epoch-based eval strategy
+#          (real SLURM uses --eval_strategy epoch — verify it)
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "─── TEST 4: Epoch-based evaluation strategy ──────────────"
+echo ""
+
+python3 "$SCRIPT" \
+    --model_name_or_path zhihan1996/DNABERT-2-117M \
+    --max_seq_length 512 \
+    \
+    --train_file "$TRAIN_FILE" \
+    --validation_file "$VAL_FILE" \
+    --max_train_samples 100 \
+    --max_eval_samples 30 \
+    --preprocessing_num_workers 2 \
+    \
+    --use_adaptive_masking \
+    --target_mlm_prob 0.15 \
+    --eclip_mlm_lo 0.20 \
+    --eclip_mlm_hi 0.25 \
+    --min_flanking_prob 0.05 \
+    \
+    --output_dir "${OUTPUT_DIR}/adaptive_epoch" \
+    --num_train_epochs 2 \
+    --per_device_train_batch_size 4 \
+    --per_device_eval_batch_size 4 \
+    --gradient_accumulation_steps 1 \
+    --learning_rate 3e-5 \
+    --weight_decay 0.01 \
+    --warmup_ratio 0.05 \
+    --lr_scheduler_type cosine \
+    --max_grad_norm 1.0 \
+    --optim adamw_torch \
+    \
+    --early_stopping_patience 3 \
+    \
+    --eval_strategy epoch \
+    --logging_steps 5 \
+    --save_total_limit 2 \
+    \
+    $FP16_FLAG \
+    --gradient_checkpointing \
+    --dataloader_num_workers 2 \
+    --dataloader_pin_memory \
+    \
+    --seed 42 \
+    --report_to none \
+&& { echo "  ✓ TEST 4 passed (epoch-based eval)"; PASS=$((PASS+1)); } \
+|| { echo "  ✗ TEST 4 FAILED"; FAIL=$((FAIL+1)); }
+
+# ═══════════════════════════════════════════════════════════════
+#  TEST 5: Verify masking distribution
+#          (unit test: ~15% total, eCLIP > flanking)
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "─── TEST 5: Verify masking distribution ──────────────────"
+echo ""
+
+BASE="$BASE" python3 - <<'PYEOF'
 """
 Quick check that the adaptive collator produces ~15% total masking
 with higher rates in eCLIP regions.
@@ -171,7 +365,6 @@ if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
 # ── Build realistic mixed-nucleotide sequences ───────────────
-# BPE compresses homopolymers heavily; use random bases for realistic token counts
 random.seed(42)
 np.random.seed(42)
 
@@ -186,13 +379,10 @@ n_content = []
 for ids in tokenized["input_ids"]:
     n = sum(1 for t in ids if t != tokenizer.pad_token_id)
     n_content.append(n)
-    
+
 print(f"  Content tokens per sequence: {n_content}")
 
 # ── Place eCLIP peaks within actual content region ────────────
-# Example 0: peak covers ~40% of content tokens in the middle
-# Example 1: no peaks
-# Example 2: peak covers ~25% of content tokens
 peak_defs = []
 for i, nc in enumerate(n_content):
     if i == 0:
@@ -221,10 +411,12 @@ for i in range(3):
     }
     examples.append(ex)
 
-# ── Create collator ──────────────────────────────────────────
+# ── Create collator (match real SLURM params exactly) ─────────
 collator = EclipAdaptiveMLMCollator(
     tokenizer=tokenizer, mlm=True,
-    target_mlm_prob=0.15, eclip_mlm_range=(0.20, 0.25), min_flanking_prob=0.05,
+    target_mlm_prob=0.15,
+    eclip_mlm_range=(0.20, 0.25),
+    min_flanking_prob=0.05,
 )
 
 # ── Run trials ───────────────────────────────────────────────
@@ -252,10 +444,9 @@ for _ in range(n_trials):
         if i == 0 and peak_defs[0][0]:
             ps = peak_defs[0][0][0]
             pe = peak_defs[0][1][0]
-            # Only count within non-padding content
-            eclip_region = masked[ps:pe]
             eclip_total  = min(pe, n_content[0]) - ps
             if eclip_total > 0:
+                eclip_region = masked[ps:pe]
                 eclip_masked = eclip_region[:eclip_total].sum().item()
                 eclip_rates_0.append(eclip_masked / eclip_total)
 
@@ -272,7 +463,8 @@ print()
 print(f"  Average total masking rate : {avg_total:.4f}  (target: 0.15)")
 print(f"  Average eCLIP masking rate : {avg_eclip:.4f}  (range: 0.20-0.25)")
 print(f"  Average flank masking rate : {avg_flank:.4f}  (should be < eCLIP)")
-print(f"  eCLIP / flank ratio        : {avg_eclip / avg_flank:.2f}x" if avg_flank > 0 else "")
+if avg_flank > 0:
+    print(f"  eCLIP / flank ratio        : {avg_eclip / avg_flank:.2f}x")
 print()
 
 # ── Assertions ────────────────────────────────────────────────
@@ -300,11 +492,107 @@ else:
     sys.exit(1)
 PYEOF
 
+if [[ $? -eq 0 ]]; then
+    echo "  ✓ TEST 5 passed (masking distribution)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ TEST 5 FAILED"
+    FAIL=$((FAIL+1))
+fi
+
+# ═══════════════════════════════════════════════════════════════
+#  TEST 6: Verify checkpoint artefacts
+#          (ensure model, tokenizer, trainer_state saved)
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "─── TEST 6: Verify saved artefacts ───────────────────────"
+echo ""
+
+ARTEFACT_OK=true
+for f in "config.json" "pytorch_model.bin" "tokenizer.json" "training_args.bin"; do
+    if [[ -f "${OUTPUT_DIR}/adaptive/$f" ]]; then
+        echo "  ✓ Found: adaptive/$f"
+    else
+        # Some configs use model.safetensors instead of pytorch_model.bin
+        alt=""
+        if [[ "$f" == "pytorch_model.bin" ]]; then
+            alt="model.safetensors"
+        fi
+        if [[ -n "$alt" && -f "${OUTPUT_DIR}/adaptive/$alt" ]]; then
+            echo "  ✓ Found: adaptive/$alt (alternative)"
+        else
+            echo "  ✗ Missing: adaptive/$f"
+            ARTEFACT_OK=false
+        fi
+    fi
+done
+
+for f in "config.json" "pytorch_model.bin" "tokenizer.json" "training_args.bin"; do
+    if [[ -f "${OUTPUT_DIR}/standard/$f" ]]; then
+        echo "  ✓ Found: standard/$f"
+    else
+        alt=""
+        if [[ "$f" == "pytorch_model.bin" ]]; then
+            alt="model.safetensors"
+        fi
+        if [[ -n "$alt" && -f "${OUTPUT_DIR}/standard/$alt" ]]; then
+            echo "  ✓ Found: standard/$alt (alternative)"
+        else
+            echo "  ✗ Missing: standard/$f"
+            ARTEFACT_OK=false
+        fi
+    fi
+done
+
+if $ARTEFACT_OK; then
+    echo "  ✓ TEST 6 passed (all artefacts present)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ TEST 6 FAILED (missing artefacts)"
+    FAIL=$((FAIL+1))
+fi
+
+# ═══════════════════════════════════════════════════════════════
+#  TEST 7: Verify saved model can be reloaded
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "─── TEST 7: Reload saved model ──────────────────────────"
+echo ""
+
+python3 -c "
+from transformers import BertForMaskedLM, BertConfig, AutoTokenizer
+import os
+
+out = '${OUTPUT_DIR}/adaptive'
+print(f'  Loading from: {out}')
+# Use BertConfig + BertForMaskedLM directly to avoid the Auto* class
+# mismatch between DNABERT2's custom BertConfig and the standard one.
+config = BertConfig.from_pretrained(out)
+model = BertForMaskedLM.from_pretrained(out, config=config)
+tok = AutoTokenizer.from_pretrained(out, trust_remote_code=True)
+n = sum(p.numel() for p in model.parameters()) / 1e6
+print(f'  ✓ Model loaded: {n:.1f}M params, vocab={len(tok)}')
+" \
+&& { echo "  ✓ TEST 7 passed (model reload)"; PASS=$((PASS+1)); } \
+|| { echo "  ✗ TEST 7 FAILED"; FAIL=$((FAIL+1)); }
+
+# ═══════════════════════════════════════════════════════════════
+#  Summary
+# ═══════════════════════════════════════════════════════════════
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo "  All tests passed!"
+echo "  RESULTS:  $PASS passed,  $FAIL failed  (out of 7)"
 echo ""
-echo "  Results saved to: $OUTPUT_DIR"
-echo "  You can now submit the full job:"
-echo "    sbatch $BASE/DNABERT2/pretrain/pretrain_dnabert2_full.slurm"
+echo "  Test output: $OUTPUT_DIR"
+echo ""
+
+if [[ $FAIL -eq 0 ]]; then
+    echo "  ✓ ALL TESTS PASSED — safe to submit SLURM jobs:"
+    echo ""
+    echo "    sbatch $BASE/DNABERT2/pretrain/pretrain_dnabert2_full.slurm"
+    echo "    sbatch $BASE/DNABERT2/pretrain/pretrain_dnabert2_standard_mlm.slurm"
+else
+    echo "  ✗ $FAIL TEST(S) FAILED — fix before submitting!"
+    exit 1
+fi
 echo "═══════════════════════════════════════════════════════════"

@@ -38,11 +38,14 @@ OUTPUT_DIR="$FINETUNE_DIR/test_output"
 export TOKENIZERS_PARALLELISM=false
 export THESIS_ROOT="$THESIS"
 
-RBP="U2AF1_K562_200"  # smallest dataset (~2.3k train)
+RBP_KOO="U2AF1_K562_200"    # smallest koo dataset (~2.3k train)
+RBP_CSV="QKI_K562_IDR"      # smallest csv dataset
+RBP="$RBP_KOO"              # default for direct finetune tests
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  DNABERT2 Fine-tuning — Smoke Test (pretrained + random)"
-echo "  RBP     : $RBP"
+echo "  RBP koo : $RBP_KOO"
+echo "  RBP csv : $RBP_CSV"
 echo "  THESIS  : $THESIS"
 echo "  Conda   : ${CONDA_DEFAULT_ENV:-unknown}"
 echo "═══════════════════════════════════════════════════════════"
@@ -68,9 +71,9 @@ echo "─── TEST $TOTAL: Fine-tune PRETRAINED on CSV (train.py) ─"
 
 python3 "$TRAIN_SCRIPT" \
     --model_name_or_path zhihan1996/DNABERT-2-117M \
-    --data_path "$THESIS/data/finetune_data_koo/$RBP" \
+    --data_path "$THESIS/DNABERT2/data/$RBP_CSV" \
     --kmer -1 \
-    --run_name test_pretrained_csv_${RBP} \
+    --run_name test_pretrained_csv_${RBP_CSV} \
     --model_max_length 25 \
     --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 16 \
@@ -96,9 +99,9 @@ echo "─── TEST $TOTAL: Fine-tune RANDOM INIT on CSV (train.py) "
 python3 "$TRAIN_SCRIPT" \
     --model_name_or_path zhihan1996/DNABERT-2-117M \
     --use_random_init \
-    --data_path "$THESIS/data/finetune_data_koo/$RBP" \
+    --data_path "$THESIS/DNABERT2/data/$RBP_CSV" \
     --kmer -1 \
-    --run_name test_random_csv_${RBP} \
+    --run_name test_random_csv_${RBP_CSV} \
     --model_max_length 25 \
     --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 16 \
@@ -122,7 +125,7 @@ echo ""
 echo "─── TEST $TOTAL: HPO PRETRAINED on CSV (2 trials) ───────"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset csv \
+    --rbp_name "$RBP_CSV" --dataset csv \
     --output_dir "$OUTPUT_DIR/hpo_pretrained_csv" \
     --n_trials 2 --max_train_samples 200 $FP16 \
 && { echo "  ✓ TEST $TOTAL passed"; PASS=$((PASS+1)); } \
@@ -136,7 +139,7 @@ echo ""
 echo "─── TEST $TOTAL: HPO RANDOM INIT on CSV (2 trials) ──────"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset csv --use_random_init \
+    --rbp_name "$RBP_CSV" --dataset csv --use_random_init \
     --output_dir "$OUTPUT_DIR/hpo_random_csv" \
     --n_trials 2 --max_train_samples 200 $FP16 \
 && { echo "  ✓ TEST $TOTAL passed"; PASS=$((PASS+1)); } \
@@ -150,7 +153,7 @@ echo ""
 echo "─── TEST $TOTAL: HPO PRETRAINED on Koo (2 trials) ───────"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset koo \
+    --rbp_name "$RBP_KOO" --dataset koo \
     --output_dir "$OUTPUT_DIR/hpo_pretrained_koo" \
     --n_trials 2 --max_train_samples 200 $FP16 \
 && { echo "  ✓ TEST $TOTAL passed"; PASS=$((PASS+1)); } \
@@ -164,7 +167,7 @@ echo ""
 echo "─── TEST $TOTAL: HPO RANDOM INIT on Koo (2 trials) ──────"
 
 python3 "$HPO_SCRIPT" \
-    --rbp_name "$RBP" --dataset koo --use_random_init \
+    --rbp_name "$RBP_KOO" --dataset koo --use_random_init \
     --output_dir "$OUTPUT_DIR/hpo_random_koo" \
     --n_trials 2 --max_train_samples 200 $FP16 \
 && { echo "  ✓ TEST $TOTAL passed"; PASS=$((PASS+1)); } \
@@ -190,7 +193,8 @@ done
 
 for variant in pretrained random; do
     for ds in csv koo; do
-        summary="$OUTPUT_DIR/hpo_${variant}_${ds}/${RBP}_${ds}/hpo_summary.json"
+        if [[ "$ds" == "koo" ]]; then _RBP="$RBP_KOO"; else _RBP="$RBP_CSV"; fi
+        summary="$OUTPUT_DIR/hpo_${variant}_${ds}/${_RBP}_${ds}/hpo_summary.json"
         if [[ -f "$summary" ]]; then
             echo "  ✓ HPO ${variant} ${ds} summary exists"
             python3 -c "import json; d=json.load(open('$summary')); print(f'    Best AUC: {d[\"best_value\"]:.4f}')"

@@ -463,14 +463,14 @@ def parse_args():
     g.add_argument("--num_train_epochs", type=int, default=10)
     g.add_argument("--max_steps", type=int, default=-1,
                    help="Max training steps (overrides epochs when > 0)")
-    g.add_argument("--per_device_train_batch_size", type=int, default=32)
-    g.add_argument("--per_device_eval_batch_size", type=int, default=64)
-    g.add_argument("--gradient_accumulation_steps", type=int, default=2)
-    g.add_argument("--learning_rate", type=float, default=3e-5)
+    g.add_argument("--per_device_train_batch_size", type=int, default=16)
+    g.add_argument("--per_device_eval_batch_size", type=int, default=32)
+    g.add_argument("--gradient_accumulation_steps", type=int, default=16)
+    g.add_argument("--learning_rate", type=float, default=5e-5)
     g.add_argument("--weight_decay", type=float, default=0.01)
-    g.add_argument("--warmup_ratio", type=float, default=0.05)
+    g.add_argument("--warmup_ratio", type=float, default=0.06)
     g.add_argument("--lr_scheduler_type", type=str, default="cosine")
-    g.add_argument("--max_grad_norm", type=float, default=1.0)
+    g.add_argument("--max_grad_norm", type=float, default=5.0)
     g.add_argument("--optim", type=str, default="adamw_torch")
 
     # ── Early stopping ────────────────────────────────────────────
@@ -547,15 +547,15 @@ def main():
     #  Model
     # ══════════════════════════════════════════════════════════════
     logger.info(f"Loading model: {args.model_name_or_path}")
-    
-    # Load config explicitly to avoid BertConfig mismatch
-    # (DNABERT-2 uses custom config that may conflict with std transformers)
+
+    # Load config via AutoConfig so trust_remote_code actually takes effect.
+    # (BertConfig.from_pretrained silently ignores trust_remote_code.)
     config = BertConfig.from_pretrained(
         args.model_name_or_path,
         trust_remote_code=True,
     )
     logger.info(f"  Config loaded: vocab_size={config.vocab_size}, hidden_size={config.hidden_size}")
-    
+
     # Load model with explicit config
     model = AutoModelForMaskedLM.from_pretrained(
         args.model_name_or_path,
@@ -566,13 +566,73 @@ def main():
     logger.info(f"  Parameters: {n_params:.1f} M")
 
     if args.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
-        logger.info("  Gradient checkpointing: enabled")
+        try:
+            model.gradient_checkpointing_enable()
+            logger.info("  Gradient checkpointing: enabled (standard API)")
+        except (ValueError, Exception) as e:
+            logger.warning(
+                f"Standard gradient_checkpointing_enable() failed ({e}). "
+                "Applying manual gradient checkpointing via torch.utils.checkpoint."
+            )
+            # DNABERT2 / MosaicBERT: manually set flag on encoder layers
+            gc_set = False
+            for module in model.modules():
+                if hasattr(module, "gradient_checkpointing"):
+                    module.gradient_checkpointing = True
+                    gc_set = True
+            if not gc_set:
+                # Wrap each encoder layer's forward with checkpoint
+                import torch.utils.checkpoint as ckpt
+                encoder = getattr(model, "bert", model)
+                encoder = getattr(encoder, "encoder", encoder)
+                if hasattr(encoder, "layer"):
+                    for layer in encoder.layer:
+                        orig_forward = layer.forward
+                        def _make_ckpt_forward(fwd):
+                            def _ckpt_forward(*args, **kwargs):
+                                def create_custom_forward(module):
+                                    def custom_forward(*inputs):
+                                        return module(*inputs)
+                                    return custom_forward
+                                return ckpt.checkpoint(create_custom_forward(fwd.__self__), *args, use_reentrant=False)
+                            return _ckpt_forward
+                        layer.forward = _make_ckpt_forward(orig_forward)
+                    logger.info(f"  Gradient checkpointing: enabled (manual, {len(encoder.layer)} layers)")
+                else:
+                    logger.warning(
+                        "Could not enable gradient checkpointing for this model. "
+                        "Continuing without it (higher memory usage)."
+                    )
 
     # ══════════════════════════════════════════════════════════════
     #  Data
     # ══════════════════════════════════════════════════════════════
     tokenize_fn = create_tokenize_fn(tokenizer, args.max_seq_length)
+
+    # ── DDP guard: only rank 0 does data loading & tokenization ──
+    # In DDP, all ranks racing to load/map/cache the same dataset
+    # causes cache corruption (.incomplete arrow files).  Let rank 0
+    # build the cache; other ranks wait, then load from cache.
+    import glob, shutil
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
+
+    # Initialize process group early if running under torchrun/DDP
+    if is_distributed and not torch.distributed.is_initialized():
+        torch.distributed.init_process_group(backend="nccl")
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+
+    if local_rank == 0:
+        # Clean up any incomplete/corrupted HF dataset cache entries
+        for p in glob.glob(os.path.join(os.path.expanduser("~"), ".cache/huggingface/datasets/**/*.incomplete"), recursive=True):
+            incomplete_dir = p if os.path.isdir(p) else os.path.dirname(p)
+            logger.warning(f"Removing incomplete cache entry: {incomplete_dir}")
+            shutil.rmtree(incomplete_dir, ignore_errors=True)
+
+    # Barrier: if DDP, wait for rank 0 to finish cache cleanup
+    if is_distributed:
+        torch.distributed.barrier()
 
     # ── training set ──────────────────────────────────────────────
     logger.info(f"Loading training data: {args.train_file}")
@@ -582,14 +642,20 @@ def main():
         logger.info(f"  Truncated to {len(train_ds)} training samples")
 
     remove_cols = list(train_ds.column_names)
+    # Use num_proc only on rank 0; other ranks load from cache
+    map_num_proc = args.preprocessing_num_workers if local_rank == 0 else 1
     train_ds = train_ds.map(
         tokenize_fn,
         batched=True,
-        num_proc=args.preprocessing_num_workers,
+        num_proc=map_num_proc,
         remove_columns=remove_cols,
         desc="Tokenizing train",
     )
     logger.info(f"  Train dataset: {len(train_ds)} examples")
+
+    # Barrier: ensure all ranks have the tokenized dataset
+    if is_distributed:
+        torch.distributed.barrier()
 
     # ── validation set ────────────────────────────────────────────
     val_ds = None
@@ -604,11 +670,15 @@ def main():
         val_ds = val_ds.map(
             tokenize_fn,
             batched=True,
-            num_proc=args.preprocessing_num_workers,
+            num_proc=map_num_proc,
             remove_columns=val_remove,
             desc="Tokenizing val",
         )
         logger.info(f"  Validation dataset: {len(val_ds)} examples")
+
+    # Final barrier after all data loading
+    if is_distributed:
+        torch.distributed.barrier()
 
     # ── quick sanity check ────────────────────────────────────────
     sample = train_ds[0]
@@ -671,7 +741,7 @@ def main():
         optim=args.optim,
         adam_beta1=0.9,
         adam_beta2=0.98,
-        adam_epsilon=1e-8,
+        adam_epsilon=1e-6,
 
         # Precision
         fp16=args.fp16,

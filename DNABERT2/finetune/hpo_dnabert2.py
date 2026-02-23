@@ -5,9 +5,9 @@ Runs Optuna trials to search over learning rate, batch size, weight decay,
 warmup ratio, epochs, gradient accumulation, and max sequence length.
 
 Supports both:
-  - CSV data   (data/finetune_data_koo/<RBP>/  with train.csv, dev.csv, test.csv)
+  - CSV data   (DNABERT2/data/<RBP>/         with train.csv, dev.csv, test.csv)
   - Koo data   (data/finetune_data_koo/<RBP>/  with train.csv, dev.csv, test.csv)
-  Both currently point to the same eclip_koo-derived CSV data.
+  These are DIFFERENT datasets with DIFFERENT RBPs.
 
 Usage:
   python hpo_dnabert2.py \
@@ -41,6 +41,7 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
+from transformers.models.bert.configuration_bert import BertConfig
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -59,11 +60,22 @@ THESIS_ROOT = os.environ.get(
 )
 
 DATASET_PATHS = {
-    "csv": os.path.join(THESIS_ROOT, "data", "finetune_data_koo"),  # CSV: sequence,label
-    "koo": os.path.join(THESIS_ROOT, "data", "finetune_data_koo"),  # CSV: sequence,label (eclip_koo)
+    "csv": os.path.join(THESIS_ROOT, "DNABERT2", "data"),          # CSV IDR data
+    "koo": os.path.join(THESIS_ROOT, "data", "finetune_data_koo"),  # eclip_koo data
 }
 
-RBPS = [
+RBPS_CSV = [
+    "GTF2F1_K562_IDR",
+    "HNRNPL_K562_IDR",
+    "HNRNPM_HepG2_IDR",
+    "ILF3_HepG2_IDR",
+    "KHSRP_K562_IDR",
+    "MATR3_K562_IDR",
+    "PTBP1_HepG2_IDR",
+    "QKI_K562_IDR",
+]
+
+RBPS_KOO = [
     "HNRNPK_K562_200",
     "PTBP1_K562_200",
     "PUM2_K562_200",
@@ -75,6 +87,8 @@ RBPS = [
     "TIA1_K562_200",
     "U2AF1_K562_200",
 ]
+
+RBPS = sorted(set(RBPS_CSV + RBPS_KOO))  # union for argparse choices
 
 MODEL_NAME = "zhihan1996/DNABERT-2-117M"
 
@@ -238,9 +252,13 @@ def make_objective(args):
         num_labels = getattr(train_ds, "num_labels", 2)
 
         # ── Model ─────────────────────────────────────────────
-        model = AutoModelForSequenceClassification.from_pretrained(
+        config = BertConfig.from_pretrained(
             MODEL_NAME,
             num_labels=num_labels,
+        )
+        model = AutoModelForSequenceClassification.from_pretrained(
+            MODEL_NAME,
+            config=config,
             trust_remote_code=True,
         )
         if args.use_random_init:

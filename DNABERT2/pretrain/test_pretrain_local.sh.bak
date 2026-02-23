@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================
+#  DNABERT2 TAPT — Local smoke test
+#
+#  Run this on a machine with a small GPU (or even CPU) to
+#  verify that the script, data loading, tokenisation, and
+#  adaptive masking all work correctly before submitting the
+#  full SLURM job.
+#
+#  Duration: ~2–5 minutes on a consumer GPU, ~10 min on CPU.
+# ============================================================
+
+# ── Paths (adjust to your machine) ────────────────────────────
+# Try workspace path first, fall back to home-dir path
+if [[ -d "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis" ]]; then
+    BASE="/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis"
+elif [[ -d "/home/fr/fr_fr/fr_ml642/Thesis" ]]; then
+    BASE="/home/fr/fr_fr/fr_ml642/Thesis"
+else
+    echo "ERROR: Cannot find Thesis directory. Set BASE manually." >&2
+    exit 1
+fi
+
+SCRIPT="$BASE/DNABERT2/pretrain/pretrain_dnabert2.py"
+TRAIN_FILE="$BASE/preprocess/preprocessed_data_metadata_train.json"
+VAL_FILE="$BASE/preprocess/preprocessed_data_metadata_val.json"
+OUTPUT_DIR="$BASE/DNABERT2/pretrain/models/test_local"
+
+export TOKENIZERS_PARALLELISM=false
+
+echo "═══════════════════════════════════════════════════════════"
+echo "  DNABERT2 TAPT — Local smoke test"
+echo "  BASE: $BASE"
+echo "═══════════════════════════════════════════════════════════"
+
+# ── Verify files exist ────────────────────────────────────────
+for f in "$SCRIPT" "$TRAIN_FILE" "$VAL_FILE"; do
+    if [[ ! -f "$f" ]]; then
+        echo "ERROR: Missing file: $f" >&2
+        exit 1
+    fi
+done
+
+# ── CUDA info ─────────────────────────────────────────────────
+python3 -c "
+import torch
+print(f'  CUDA available : {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'  GPU            : {torch.cuda.get_device_name(0)}')
+    mem = torch.cuda.get_device_properties(0).total_memory / 1e9
+    print(f'  VRAM           : {mem:.1f} GB')
+else:
+    print('  Running on CPU (expect slower execution)')
+" 2>/dev/null || echo "  (could not detect GPU)"
+
+# ── Clean previous test output ────────────────────────────────
+rm -rf "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"
+
+# ═══════════════════════════════════════════════════════════════
+#  TEST 1: Adaptive masking (eCLIP-aware)
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "─── TEST 1: Adaptive masking collator ────────────────────"
+echo ""
+
+python3 "$SCRIPT" \
+    --model_name_or_path zhihan1996/DNABERT-2-117M \
+    --max_seq_length 512 \
+    \
+    --train_file "$TRAIN_FILE" \
+    --validation_file "$VAL_FILE" \
+    --max_train_samples 200 \
+    --max_eval_samples 50 \
+    --preprocessing_num_workers 4 \
+    \
+    --use_adaptive_masking \
+    --target_mlm_prob 0.15 \
+    --eclip_mlm_lo 0.20 \
+    --eclip_mlm_hi 0.25 \
+    \
+    --output_dir "${OUTPUT_DIR}/adaptive" \
+    --max_steps 20 \
+    --per_device_train_batch_size 4 \
+    --per_device_eval_batch_size 4 \
+    --gradient_accumulation_steps 1 \
+    --learning_rate 3e-5 \
+    --warmup_ratio 0.1 \
+    \
+    --save_steps 10 \
+    --eval_steps 10 \
+    --logging_steps 5 \
+    --save_total_limit 1 \
+    \
+    --early_stopping_patience 3 \
+    --dataloader_num_workers 0 \
+    --seed 42 \
+    --report_to none
+
+echo ""
+echo "  ✓ TEST 1 passed (adaptive masking)"
+echo ""
+
+# ═══════════════════════════════════════════════════════════════
+#  TEST 2: Standard masking (uniform 15%)
+# ═══════════════════════════════════════════════════════════════
+echo "─── TEST 2: Standard masking collator ────────────────────"
+echo ""
+
+python3 "$SCRIPT" \
+    --model_name_or_path zhihan1996/DNABERT-2-117M \
+    --max_seq_length 512 \
+    \
+    --train_file "$TRAIN_FILE" \
+    --validation_file "$VAL_FILE" \
+    --max_train_samples 200 \
+    --max_eval_samples 50 \
+    --preprocessing_num_workers 1 \
+    \
+    --output_dir "${OUTPUT_DIR}/standard" \
+    --max_steps 20 \
+    --per_device_train_batch_size 4 \
+    --per_device_eval_batch_size 4 \
+    --gradient_accumulation_steps 1 \
+    --learning_rate 3e-5 \
+    --warmup_ratio 0.1 \
+    \
+    --save_steps 10 \
+    --eval_steps 10 \
+    --logging_steps 5 \
+    --save_total_limit 1 \
+    \
+    --early_stopping_patience 3 \
+    --dataloader_num_workers 0 \
+    --seed 42 \
+    --report_to none
+
+echo ""
+echo "  ✓ TEST 2 passed (standard masking)"
+echo ""
+
+# ═══════════════════════════════════════════════════════════════
+#  TEST 3: Verify masking distribution
+# ═══════════════════════════════════════════════════════════════
+echo "─── TEST 3: Verify masking distribution ──────────────────"
+echo ""
+
+BASE="$BASE" SCRIPT="$SCRIPT" python3 - <<'PYEOF'
+"""
+Quick check that the adaptive collator produces ~15% total masking
+with higher rates in eCLIP regions.
+
+Uses realistic mixed-nucleotide DNA sequences so BPE tokenization produces
+enough content tokens, then derives peak positions from actual token counts.
+"""
+import json, torch, numpy as np, sys, os, random
+
+sys.path.insert(0, os.path.join(
+    os.environ.get("BASE", "."), "DNABERT2", "pretrain"))
+from transformers import AutoTokenizer
+from pretrain_dnabert2 import EclipAdaptiveMLMCollator
+
+# ── Load tokenizer ────────────────────────────────────────────
+print("  Loading tokenizer …")
+tokenizer = AutoTokenizer.from_pretrained(
+    "zhihan1996/DNABERT-2-117M", trust_remote_code=True, model_max_length=512,
+)
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+# ── Build realistic mixed-nucleotide sequences ───────────────
+# BPE compresses homopolymers heavily; use random bases for realistic token counts
+random.seed(42)
+np.random.seed(42)
+
+def rand_dna(n):
+    return "".join(random.choices("ACGT", k=n))
+
+seqs = [rand_dna(512) for _ in range(3)]
+
+# Tokenize and inspect actual lengths
+tokenized = tokenizer(seqs, padding="max_length", max_length=512, truncation=True)
+n_content = []
+for ids in tokenized["input_ids"]:
+    n = sum(1 for t in ids if t != tokenizer.pad_token_id)
+    n_content.append(n)
+    
+print(f"  Content tokens per sequence: {n_content}")
+
+# ── Place eCLIP peaks within actual content region ────────────
+# Example 0: peak covers ~40% of content tokens in the middle
+# Example 1: no peaks
+# Example 2: peak covers ~25% of content tokens
+peak_defs = []
+for i, nc in enumerate(n_content):
+    if i == 0:
+        # Peak in middle 40% of content
+        ps = nc // 4
+        pe = ps + nc * 2 // 5
+        peak_defs.append(([ps], [pe]))
+    elif i == 2:
+        # Peak in first 25% of content (skip special token at 0)
+        ps = 1
+        pe = 1 + nc // 4
+        peak_defs.append(([ps], [pe]))
+    else:
+        peak_defs.append(([], []))
+
+print(f"  Peak defs (token positions): {peak_defs}")
+
+# ── Build examples ────────────────────────────────────────────
+examples = []
+for i in range(3):
+    ex = {
+        "input_ids":         tokenized["input_ids"][i],
+        "attention_mask":    tokenized["attention_mask"][i],
+        "eclip_token_starts": list(peak_defs[i][0]),
+        "eclip_token_ends":   list(peak_defs[i][1]),
+    }
+    examples.append(ex)
+
+# ── Create collator ──────────────────────────────────────────
+collator = EclipAdaptiveMLMCollator(
+    tokenizer=tokenizer, mlm=True,
+    target_mlm_prob=0.15, eclip_mlm_range=(0.20, 0.25), min_flanking_prob=0.05,
+)
+
+# ── Run trials ───────────────────────────────────────────────
+n_trials = 500
+total_rates = []
+eclip_rates_0 = []
+flank_rates_0 = []
+
+for _ in range(n_trials):
+    batch_examples = [dict(ex) for ex in examples]
+    batch = collator(batch_examples)
+    labels = batch["labels"]
+    input_ids = batch["input_ids"]
+
+    for i in range(3):
+        masked = (labels[i] != -100)
+        pad = (input_ids[i] == tokenizer.pad_token_id)
+        non_pad = ~pad
+        valid = non_pad.sum().item()
+        if valid > 0:
+            rate = masked.sum().item() / valid
+            total_rates.append(rate)
+
+        # For example 0, measure eclip vs flank separately
+        if i == 0 and peak_defs[0][0]:
+            ps = peak_defs[0][0][0]
+            pe = peak_defs[0][1][0]
+            # Only count within non-padding content
+            eclip_region = masked[ps:pe]
+            eclip_total  = min(pe, n_content[0]) - ps
+            if eclip_total > 0:
+                eclip_masked = eclip_region[:eclip_total].sum().item()
+                eclip_rates_0.append(eclip_masked / eclip_total)
+
+            flank_total = valid - eclip_total
+            if flank_total > 0:
+                flank_masked = masked[:ps].sum().item() + masked[pe:n_content[0]].sum().item()
+                flank_rates_0.append(flank_masked / flank_total)
+
+avg_total = np.mean(total_rates)
+avg_eclip = np.mean(eclip_rates_0) if eclip_rates_0 else 0
+avg_flank = np.mean(flank_rates_0) if flank_rates_0 else 0
+
+print()
+print(f"  Average total masking rate : {avg_total:.4f}  (target: 0.15)")
+print(f"  Average eCLIP masking rate : {avg_eclip:.4f}  (range: 0.20-0.25)")
+print(f"  Average flank masking rate : {avg_flank:.4f}  (should be < eCLIP)")
+print(f"  eCLIP / flank ratio        : {avg_eclip / avg_flank:.2f}x" if avg_flank > 0 else "")
+print()
+
+# ── Assertions ────────────────────────────────────────────────
+ok = True
+if not (0.12 <= avg_total <= 0.18):
+    print(f"  ✗ FAIL: total rate {avg_total:.4f} outside [0.12, 0.18]")
+    ok = False
+else:
+    print(f"  ✓ Total rate {avg_total:.4f} is within [0.12, 0.18]")
+
+if eclip_rates_0 and flank_rates_0:
+    if avg_eclip > avg_flank:
+        print(f"  ✓ eCLIP rate ({avg_eclip:.4f}) > flank rate ({avg_flank:.4f})")
+    else:
+        print(f"  ✗ FAIL: eCLIP rate ({avg_eclip:.4f}) should exceed flank rate ({avg_flank:.4f})")
+        ok = False
+else:
+    print(f"  ⚠ Could not measure eCLIP/flank rates (lists empty)")
+    ok = False
+
+if ok:
+    print("\n  ✓ Masking distribution looks correct!")
+else:
+    print("\n  ✗ Some masking checks failed — investigate.")
+    sys.exit(1)
+PYEOF
+
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo "  All tests passed!"
+echo ""
+echo "  Results saved to: $OUTPUT_DIR"
+echo "  You can now submit the full job:"
+echo "    sbatch $BASE/DNABERT2/pretrain/pretrain_dnabert2_full.slurm"
+echo "═══════════════════════════════════════════════════════════"

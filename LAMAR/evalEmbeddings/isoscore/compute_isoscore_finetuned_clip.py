@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Compute IsoScore for finetuned LAMAR models on CLIP training data.
 """

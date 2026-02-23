@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Pre-flight check for HPO finetuning jobs.
 

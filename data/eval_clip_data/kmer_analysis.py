@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """kmer_analysis.py
 
 Compute dinucleotide and trinucleotide frequencies for FASTA files.

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Analyze GC content in eCLIP h5 files.
 Compare GC content between positive and negative samples.

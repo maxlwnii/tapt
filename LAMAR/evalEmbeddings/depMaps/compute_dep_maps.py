@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Compute and visualize dependency maps for LAMAR finetuned models.
 Adapted from DNABERT_2_project/visualisation.py for LAMAR models.

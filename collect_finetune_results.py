@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Collect finetuning results from all 5 model variants.
 

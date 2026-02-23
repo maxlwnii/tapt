@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Compute IsoScore for LAMAR model embeddings on CLIP training data.
 IsoScore measures embedding isotropy - how uniformly embeddings fill the space.

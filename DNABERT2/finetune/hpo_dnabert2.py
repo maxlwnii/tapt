@@ -268,7 +268,6 @@ def make_objective(args):
         # ── Training args ─────────────────────────────────────
         training_args = TrainingArguments(
             output_dir=trial_dir,
-            overwrite_output_dir=True,
             num_train_epochs=num_epochs,
             per_device_train_batch_size=batch_size,
             per_device_eval_batch_size=16,

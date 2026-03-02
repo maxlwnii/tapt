@@ -48,6 +48,16 @@ from transformers import (
     TrainingArguments,
 )
 
+# transformers <4.46 uses 'evaluation_strategy'; ≥4.46 renamed it 'eval_strategy'
+import inspect as _inspect
+_EVAL_KEY = (
+    "eval_strategy"
+    if "eval_strategy" in _inspect.signature(TrainingArguments.__init__).parameters
+    else "evaluation_strategy"
+)
+logger_tmp = logging.getLogger(__name__)
+logger_tmp.info(f"TrainingArguments eval key: '{_EVAL_KEY}'")
+
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -96,7 +106,12 @@ RBPS_KOO = [
 RBPS = sorted(set(RBPS_CSV + RBPS_KOO))  # union for argparse choices
 
 DEFAULT_TOKENIZER = os.path.join(
-    THESIS_ROOT, "LAMAR", "src", "pretrain", "saving_model", "tapt_lamar", "checkpoint-100000"
+    THESIS_ROOT, "LAMAR", "src", "pretrain", "saving_model", "tapt_1024_standard_collator", "checkpoint-134000"
+)
+
+PRETRAIN_PATH = os.path.join(
+    THESIS_ROOT, "LAMAR", "src", "pretrain", "saving_model",
+    "tapt_1024_standard_collator", "checkpoint-134000", "model.safetensors"
 )
 
 
@@ -260,8 +275,7 @@ def make_objective(args, tokenizer, dataset):
         model = EsmForSequenceClassification(config)
         model.apply(init_weights)
 
-        if args.pretrain_path and os.path.exists(args.pretrain_path):
-            load_encoder_weights(model, args.pretrain_path)
+        load_encoder_weights(model, PRETRAIN_PATH)
 
         if do_freeze:
             freeze_encoder(model, freeze=True)
@@ -269,7 +283,6 @@ def make_objective(args, tokenizer, dataset):
         # ── Training args ─────────────────────────────────────
         training_args = TrainingArguments(
             output_dir=trial_dir,
-            overwrite_output_dir=True,
             num_train_epochs=num_epochs,
             per_device_train_batch_size=batch_size,
             per_device_eval_batch_size=16,
@@ -281,8 +294,7 @@ def make_objective(args, tokenizer, dataset):
             adam_beta2=0.98,
             adam_epsilon=1e-8,
             max_grad_norm=1.0,
-            fp16=args.fp16,
-            evaluation_strategy="epoch",
+            **{_EVAL_KEY: "epoch"},
             save_strategy="epoch",
             logging_steps=50,
             save_total_limit=1,
@@ -306,7 +318,7 @@ def make_objective(args, tokenizer, dataset):
                 per_device_eval_batch_size=16,
                 learning_rate=lr,
                 weight_decay=weight_decay,
-                evaluation_strategy="epoch",
+                **{_EVAL_KEY: "epoch"},
                 save_strategy="epoch",
                 save_total_limit=1,
                 load_best_model_at_end=False,
@@ -369,8 +381,6 @@ def parse_args():
     p.add_argument("--rbp_name", type=str, required=True, choices=RBPS)
     p.add_argument("--dataset", type=str, required=True, choices=["koo", "csv"],
                    help="Dataset: 'koo' (eclip_koo CSV) or 'csv' (DNABERT2/data IDR CSV)")
-    p.add_argument("--pretrain_path", type=str, default="",
-                   help="Path to pretrained encoder weights (safetensors)")
     p.add_argument("--tokenizer_path", type=str, default=DEFAULT_TOKENIZER,
                    help="Path to LAMAR tokenizer")
     p.add_argument("--output_dir", type=str, default="./hpo_results/lamar",
@@ -379,6 +389,11 @@ def parse_args():
     p.add_argument("--max_train_samples", type=int, default=None,
                    help="Limit training samples per trial (for testing)")
     p.add_argument("--fp16", action="store_true")
+    p.add_argument("--bf16", action="store_true",
+                   help="Use bfloat16 mixed precision (more stable than fp16 on A40/CUDA 12+)")
+    # Note: both flags are accepted but ignored — torch 2.10+cu128 has a
+    # cublasGemmEx bug with FP16/BF16. Training runs in FP32 which is safe
+    # on A40 (48 GB). Remove this note once torch is updated.
     p.add_argument("--study_name", type=str, default=None)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
@@ -429,7 +444,7 @@ def main():
         "study_name": study_name,
         "rbp_name": args.rbp_name,
         "dataset": args.dataset,
-        "pretrain_path": args.pretrain_path,
+        "pretrain_path": PRETRAIN_PATH,
         "n_trials": args.n_trials,
         "best_trial": study.best_trial.number,
         "best_value": study.best_value,

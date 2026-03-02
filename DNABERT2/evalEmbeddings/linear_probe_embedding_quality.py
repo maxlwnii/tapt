@@ -3,12 +3,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
 from sklearn.manifold import TSNE
 from sklearn.metrics import accuracy_score, average_precision_score, f1_score, roc_auc_score
@@ -17,7 +18,9 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import wilcoxon
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoConfig, AutoModel, AutoTokenizer
+
+from layer_search import run_layer_search, _call_with_all_layers
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,18 +49,6 @@ def parse_args() -> argparse.Namespace:
         help="HF id or local path for base DNABERT2",
     )
     p.add_argument(
-        "--tapt_lamar_model",
-        type=str,
-        default="/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/src/pretrain/saving_model/tapt_lamar/checkpoint-98000",
-        help="Path to TAPT LAMAR checkpoint",
-    )
-    p.add_argument(
-        "--pretrained_lamar_model",
-        type=str,
-        default="/home/fr/fr_fr/fr_ml642/Thesis/LAMAR/weights",
-        help="Path to pretrained LAMAR weights (checkpoint dir or single weights file)",
-    )
-    p.add_argument(
         "--fallback_tokenizer",
         type=str,
         default="zhihan1996/DNABERT-2-117M",
@@ -81,10 +72,35 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--embedding_models",
         nargs="+",
-        default=["one_hot", "base_dnabert2", "tapt_lamar", "pretrained_lamar"],
+        default=["one_hot", "base_dnabert2", "random_dnabert2"],
         help="Subset of embedding models to run",
     )
     p.add_argument("--skip_plots", action="store_true", help="Skip plotting for fast smoke tests")
+    
+    # Layer search arguments
+    p.add_argument(
+        "--enable_layer_search",
+        action="store_true",
+        help="Enable layer search to find optimal intermediate layer",
+    )
+    p.add_argument(
+        "--layer_search_pilot_rbp",
+        type=str,
+        default=None,
+        help="RBP to use as pilot for layer search. If None, uses first alphabetically.",
+    )
+    p.add_argument(
+        "--layer_search_models",
+        nargs="+",
+        default=["base_dnabert2"],
+        help="Run layer search on these models independently.",
+    )
+    p.add_argument(
+        "--best_layer_override",
+        type=int,
+        default=None,
+        help="Skip layer search and use this layer index directly (applied to all layer_search_models)",
+    )
 
     return p.parse_args()
 
@@ -162,11 +178,6 @@ def one_hot_embed(sequences: List[str], max_length: int) -> np.ndarray:
     return embs
 
 
-def _model_cache_key(model_name: str, max_length: int) -> str:
-    raw = f"{model_name}__L{max_length}"
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
-
-
 def get_tokenizer(model_path: str, fallback_tokenizer: str):
     try:
         return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -174,37 +185,74 @@ def get_tokenizer(model_path: str, fallback_tokenizer: str):
         return AutoTokenizer.from_pretrained(fallback_tokenizer, trust_remote_code=True)
 
 
-def _extract_state_dict(raw_obj):
-    if isinstance(raw_obj, dict):
-        if "state_dict" in raw_obj and isinstance(raw_obj["state_dict"], dict):
-            return raw_obj["state_dict"]
-        if "model" in raw_obj and isinstance(raw_obj["model"], dict):
-            return raw_obj["model"]
-    return raw_obj
+def _materialize_meta_tensors(model: torch.nn.Module) -> torch.nn.Module:
+    """Replace any parameter / buffer stuck on the 'meta' device with real CPU tensors.
+
+    DNABERT-2's custom BertEncoder creates an alibi tensor during __init__.
+    Depending on the transformers version the model can be initialised on the
+    meta device first, leaving those tensors unmaterialised.  Moving the whole
+    model to CPU (model.to('cpu')) does NOT help because PyTorch refuses to
+    move a meta tensor to a real device.
+
+    This function walks through every module and re-creates offending tensors
+    with the correct shape / dtype on CPU so that the subsequent .to(device)
+    call succeeds.
+    """
+    for name, mod in model.named_modules():
+        # --- fix buffers ---
+        buf_names = [n for n, b in mod.named_buffers(recurse=False) if b.device.type == "meta"]
+        for bname in buf_names:
+            old = getattr(mod, bname)
+            new = torch.empty(old.shape, dtype=old.dtype, device="cpu")
+            torch.nn.init.zeros_(new)
+            mod.register_buffer(bname, new)
+            print(f"  [meta→cpu] buffer  {name}.{bname}  shape={list(old.shape)}")
+
+        # --- fix parameters ---
+        param_names = [n for n, p in mod.named_parameters(recurse=False) if p.device.type == "meta"]
+        for pname in param_names:
+            old = getattr(mod, pname)
+            new = torch.nn.Parameter(
+                torch.empty(old.shape, dtype=old.dtype, device="cpu"),
+                requires_grad=old.requires_grad,
+            )
+            torch.nn.init.zeros_(new)
+            setattr(mod, pname, new)
+            print(f"  [meta→cpu] param   {name}.{pname}  shape={list(old.shape)}")
+
+    return model
 
 
-def load_model_for_embeddings(model_path: str, fallback_model: str):
-    model_file = Path(model_path)
+def load_model_for_embeddings(model_path: str, pad_token_id: int):
+    print(f"[INFO] Loading model: {model_path}")
 
-    if model_file.is_file():
-        model = AutoModel.from_pretrained(fallback_model, trust_remote_code=True)
-        suffix = model_file.suffix.lower()
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    
+    # Use object.__setattr__ to bypass any custom property setters
+    if not hasattr(config, "pad_token_id") or getattr(config, "pad_token_id") is None:
+        object.__setattr__(config, "pad_token_id", int(pad_token_id))
 
-        if suffix == ".safetensors" or model_file.name == "weights":
-            from safetensors.torch import load_file
+    model = AutoModel.from_pretrained(
+        model_path,
+        trust_remote_code=True,
+        config=config,
+        _fast_init=False,       # <-- this is the key fix; skips meta-device init
+    )
 
-            state = load_file(str(model_file))
-        else:
-            state = torch.load(str(model_file), map_location="cpu")
-            state = _extract_state_dict(state)
+    # Materialize any tensors that ended up on the meta device
+    model = _materialize_meta_tensors(model)
+    return model
 
-        load_info = model.load_state_dict(state, strict=False)
-        missing = len(getattr(load_info, "missing_keys", []))
-        unexpected = len(getattr(load_info, "unexpected_keys", []))
-        print(f"[INFO] Loaded file weights {model_file} (missing={missing}, unexpected={unexpected})")
-        return model
-
-    return AutoModel.from_pretrained(model_path, trust_remote_code=True)
+def load_model_random_init(config_path: str, pad_token_id: int):
+    """Architecture loaded from config but with RANDOM weights – lower-bound baseline."""
+    config = AutoConfig.from_pretrained(config_path, trust_remote_code=True)
+    if not hasattr(config, "pad_token_id") or getattr(config, "pad_token_id") is None:
+        config.pad_token_id = int(pad_token_id)
+    model = AutoModel.from_config(config, trust_remote_code=True)
+    model = _materialize_meta_tensors(model)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"[INFO] Random-init model from {config_path} ({n_params:,} params)")
+    return model
 
 
 def mean_pool_last_hidden(hidden: torch.Tensor, attention_mask: torch.Tensor, input_ids: torch.Tensor, special_ids: List[int]) -> torch.Tensor:
@@ -227,16 +275,26 @@ def transformer_embeddings(
     max_length: int,
     batch_size: int,
     device: torch.device,
-    fallback_model: str,
+    layer_idx: Optional[int] = None,
+    is_random_init: bool = False,
 ) -> np.ndarray:
     tokenizer = get_tokenizer(model_path, fallback_tokenizer)
-    model = load_model_for_embeddings(model_path=model_path, fallback_model=fallback_model)
+    
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+
+    if is_random_init:
+        model = load_model_random_init(model_path, pad_token_id=pad_token_id)
+    else:
+        model = load_model_for_embeddings(model_path=model_path, pad_token_id=pad_token_id)
+        
     model.to(device)
     model.eval()
 
     all_vecs = []
+    n_batches = (len(sequences) + batch_size - 1) // batch_size
+    desc = f"{'rand' if is_random_init else 'emb'} L{layer_idx if layer_idx is not None else 'last'}"
     with torch.no_grad():
-        for i in range(0, len(sequences), batch_size):
+        for i in tqdm(range(0, len(sequences), batch_size), total=n_batches, desc=desc, unit="batch"):
             batch = sequences[i : i + batch_size]
             tokens = tokenizer(
                 batch,
@@ -247,8 +305,12 @@ def transformer_embeddings(
             )
             tokens = {k: v.to(device) for k, v in tokens.items()}
 
-            out = model(**tokens)
-            hidden = out.last_hidden_state
+            if layer_idx is not None:
+                hidden = _call_with_all_layers(model, tokens)[layer_idx]
+            else:
+                out = model(**tokens)
+                hidden = out[0] if isinstance(out, tuple) else out.last_hidden_state
+            
             pooled = mean_pool_last_hidden(
                 hidden,
                 tokens["attention_mask"],
@@ -295,7 +357,7 @@ def evaluate_linear_probe(X: np.ndarray, y: np.ndarray, n_splits: int, seed: int
 
         clf = make_pipeline(
             StandardScaler(),
-            LogisticRegression(max_iter=1000, C=1.0, random_state=seed),
+            LogisticRegression(max_iter=5000, C=1.0, random_state=seed),
         )
         clf.fit(X_tr, y_tr)
 
@@ -362,14 +424,14 @@ def plot_per_rbp_bars(per_rbp_df: pd.DataFrame, out_path: Path) -> None:
 
 def plot_delta(per_rbp_df: pd.DataFrame, out_path: Path) -> None:
     pivot = per_rbp_df.pivot(index="rbp", columns="model", values="auroc")
-    if not {"base_dnabert2", "tapt_lamar"}.issubset(set(pivot.columns)):
+    if not {"base_dnabert2", "random_dnabert2"}.issubset(set(pivot.columns)):
         return
 
-    delta = (pivot["tapt_lamar"] - pivot["base_dnabert2"]).sort_values()
+    delta = (pivot["base_dnabert2"] - pivot["random_dnabert2"]).sort_values()
     plt.figure(figsize=(12, 5))
     plt.bar(delta.index, delta.values)
     plt.axhline(0.0, linestyle="--")
-    plt.ylabel("ΔAUROC (TAPT - Base)")
+    plt.ylabel("ΔAUROC (Base - Random)")
     plt.title("Per-RBP delta AUROC")
     plt.xticks(rotation=60, ha="right")
     plt.tight_layout()
@@ -481,11 +543,13 @@ def main() -> None:
 
     print(f"Loaded {len(tasks)} RBP tasks")
 
+    random_init_model_names: set = {"random_dnabert2"}
+
     raw_model_specs = {
         "base_dnabert2": args.base_model,
-        "tapt_lamar": args.tapt_lamar_model,
-        "pretrained_lamar": args.pretrained_lamar_model,
+        "random_dnabert2": args.base_model,
     }
+    
     model_specs = {}
     for name, model_ref in raw_model_specs.items():
         if not model_ref:
@@ -497,6 +561,51 @@ def main() -> None:
         model_specs[name] = model_ref
 
     selected_models = set(args.embedding_models)
+
+    # --- Layer Search (Optional) ---
+    best_layer_for_model = {}
+
+    _ls_models: List[str] = args.layer_search_models
+    _ls_models = [m for m in _ls_models if m in model_specs and m not in random_init_model_names]
+
+    if args.enable_layer_search or args.best_layer_override is not None:
+        if args.layer_search_pilot_rbp:
+            pilot_rbp = args.layer_search_pilot_rbp
+            if pilot_rbp not in tasks:
+                print(f"[WARN] Specified pilot RBP '{pilot_rbp}' not found. Using first alphabetically.")
+                pilot_rbp = tasks_items[0][0]
+        else:
+            pilot_rbp = tasks_items[0][0]
+
+        pilot_df = tasks[pilot_rbp]
+        if args.max_samples_per_rbp > 0 and len(pilot_df) > args.max_samples_per_rbp:
+            pilot_df = pilot_df.sample(n=args.max_samples_per_rbp, random_state=args.seed)
+        pilot_seqs = pilot_df["sequence"].tolist()
+        pilot_labels = pilot_df["label"].to_numpy(dtype=np.int64)
+
+        if args.best_layer_override is not None:
+            print(f"\n[INFO] Using best_layer_override={args.best_layer_override} for: {_ls_models}")
+            for m in _ls_models:
+                best_layer_for_model[m] = args.best_layer_override
+        else:
+            for search_model in _ls_models:
+                best_layer = run_layer_search(
+                    sequences=pilot_seqs,
+                    labels=pilot_labels,
+                    model_path=model_specs[search_model],
+                    fallback_tokenizer=args.fallback_tokenizer,
+                    fallback_model=args.base_model,
+                    max_length=args.max_length,
+                    batch_size=args.batch_size,
+                    device=device,
+                    cache_dir=cache_dir / "layer_search" / search_model,
+                    output_dir=output_dir / f"layer_search_{search_model}",
+                    rbp_name=pilot_rbp,
+                    num_folds=args.num_folds,
+                    seed=args.seed,
+                )
+                best_layer_for_model[search_model] = best_layer
+                print(f"  → Best layer for {search_model}: {best_layer}")
 
     per_rbp_records = []
     embedding_pool: Dict[str, List[np.ndarray]] = {}
@@ -519,25 +628,32 @@ def main() -> None:
         for model_name, model_path in model_specs.items():
             if model_name not in selected_models:
                 continue
-            emb_builders[model_name] = lambda seqs=sequences, mp=model_path: transformer_embeddings(
+
+            layer_idx = best_layer_for_model.get(model_name, None)
+            is_rand = model_name in random_init_model_names
+
+            cache_emb_name = f"{model_name}_L{layer_idx}" if layer_idx is not None else model_name
+
+            emb_builders[cache_emb_name] = lambda seqs=sequences, mp=model_path, li=layer_idx, ir=is_rand: transformer_embeddings(
                 seqs,
                 model_path=mp,
                 fallback_tokenizer=args.fallback_tokenizer,
                 max_length=args.max_length,
                 batch_size=args.batch_size,
                 device=device,
-                fallback_model=args.base_model,
+                layer_idx=li,
+                is_random_init=ir,
             )
 
-        for emb_name, builder in emb_builders.items():
-            X = get_or_build_embeddings(sequences, emb_name, rbp, cache_dir, builder)
+        for cache_emb_name, builder in emb_builders.items():
+            X = get_or_build_embeddings(sequences, cache_emb_name, rbp, cache_dir, builder)
             y = labels
 
             metrics = evaluate_linear_probe(X, y, n_splits=args.num_folds, seed=args.seed)
             per_rbp_records.append(
                 {
                     "rbp": rbp,
-                    "model": emb_name,
+                    "model": cache_emb_name,
                     "auroc": metrics["auroc_mean"],
                     "accuracy": metrics["accuracy_mean"],
                     "f1": metrics["f1_mean"],
@@ -546,8 +662,8 @@ def main() -> None:
                 }
             )
 
-            embedding_pool.setdefault(emb_name, []).append(X)
-            rbp_pool.setdefault(emb_name, []).append(np.full(len(X), rbp_to_int[rbp], dtype=np.int32))
+            embedding_pool.setdefault(cache_emb_name, []).append(X)
+            rbp_pool.setdefault(cache_emb_name, []).append(np.full(len(X), rbp_to_int[rbp], dtype=np.int32))
 
     per_rbp_df = pd.DataFrame(per_rbp_records)
     per_rbp_df.to_csv(output_dir / "per_rbp_metrics.csv", index=False)
@@ -561,7 +677,7 @@ def main() -> None:
     if not args.skip_plots:
         plot_boxplot(per_rbp_df, plots_dir / "auroc_boxplot.png")
         plot_per_rbp_bars(per_rbp_df, plots_dir / "per_rbp_auroc_bars.png")
-        plot_delta(per_rbp_df, plots_dir / "delta_auroc_tapt_minus_base.png")
+        plot_delta(per_rbp_df, plots_dir / "delta_auroc_base_minus_random.png")
 
     embeddings_by_model = {}
     for model_name in embedding_pool:
@@ -587,20 +703,41 @@ def main() -> None:
 
     stat_results = {}
     pivot = per_rbp_df.pivot(index="rbp", columns="model", values="auroc")
-    if {"base_dnabert2", "tapt_lamar"}.issubset(set(pivot.columns)):
-        w = wilcoxon(pivot["tapt_lamar"], pivot["base_dnabert2"], alternative="two-sided")
-        stat_results["wilcoxon_tapt_vs_base"] = {
-            "statistic": float(w.statistic),
-            "pvalue": float(w.pvalue),
-            "n_rbps": int(len(pivot)),
-            "mean_delta_auroc": float((pivot["tapt_lamar"] - pivot["base_dnabert2"]).mean()),
-        }
+    all_cols = set(pivot.columns)
+
+    _ref_candidates = ["base_dnabert2", "one_hot"]
+    _ref = next((c for c in _ref_candidates if c in all_cols), None)
+
+    if _ref is not None:
+        for other in sorted(all_cols - {_ref}):
+            paired = pivot[[_ref, other]].dropna()
+            if len(paired) < 5:
+                print(f"[WARN] Skipping Wilcoxon {other} vs {_ref}: only {len(paired)} shared RBPs")
+                continue
+            try:
+                w = wilcoxon(paired[other], paired[_ref], alternative="two-sided")
+                key = f"wilcoxon_{other}_vs_{_ref}"
+                stat_results[key] = {
+                    "statistic": float(w.statistic),
+                    "pvalue": float(w.pvalue),
+                    "n_rbps": int(len(paired)),
+                    "mean_delta_auroc": float((paired[other] - paired[_ref]).mean()),
+                    "reference_model": _ref,
+                }
+                print(f"  {key}: p={w.pvalue:.4f}, Δ={stat_results[key]['mean_delta_auroc']:+.4f}")
+            except Exception as exc:
+                print(f"[WARN] Wilcoxon {other} vs {_ref} failed: {exc}")
+    else:
+        print("[WARN] No reference model found for Wilcoxon tests.")
 
     with open(output_dir / "statistical_tests.json", "w", encoding="utf-8") as f:
         json.dump(stat_results, f, indent=2)
 
     print(f"\nSaved results to: {output_dir}")
     print(f"Saved plots to:   {plots_dir}")
+    
+    if best_layer_for_model:
+        print(f"Layer search results: {best_layer_for_model}")
 
 
 if __name__ == "__main__":

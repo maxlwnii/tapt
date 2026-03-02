@@ -1,6 +1,0 @@
-- Perform linear probing on best intermediate layers.
-- Perfrom unsupervised metrics ISOSCORE, RankME, NetSum, StableRank on embeddings.
-- Finetune simple CNN also.
-- Perfrom Pretraining on DNABERT2 -> import orignal pretraining data for evaluation. Choose low lr rate for
-  DNABERT2.
-- WHAT DOES LOADING FROM CACHE REALLY DO IN LINEAR PROBING?

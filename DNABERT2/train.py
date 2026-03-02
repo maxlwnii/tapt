@@ -360,7 +360,6 @@ def train():
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
         trust_remote_code=True,
-        low_cpu_mem_usage=False,
         config=config
     )
 

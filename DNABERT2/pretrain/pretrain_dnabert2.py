@@ -720,7 +720,6 @@ def main():
     # ══════════════════════════════════════════════════════════════
     training_args = TrainingArguments(
         output_dir=args.output_dir,
-        overwrite_output_dir=True,
 
         # Schedule
         num_train_epochs=args.num_train_epochs,

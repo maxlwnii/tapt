@@ -4,6 +4,9 @@ set -euo pipefail
 BASE="/home/fr/fr_fr/fr_ml642/Thesis"
 SCRIPT="$BASE/DNABERT2/evalEmbeddings/linear_probe_embedding_quality.py"
 
+# Added PYTHONPATH to ensure custom imports work in the smoke test
+export PYTHONPATH="$BASE:${PYTHONPATH:-}"
+
 RUN_TAG="smoke_$(date +%Y%m%d_%H%M%S)"
 
 if [[ "${1:-}" == "dnabert2" ]]; then
@@ -13,9 +16,13 @@ if [[ "${1:-}" == "dnabert2" ]]; then
   OUT_DIR="$BASE/DNABERT2/evalEmbeddings/results/linear_probe_embedding_quality/$RUN_TAG"
   CACHE_DIR="$BASE/DNABERT2/evalEmbeddings/results/linear_probe_embedding_quality/cache/$RUN_TAG"
 
+  # Added directory creation
+  mkdir -p "$OUT_DIR" "$CACHE_DIR"
+
   python "$SCRIPT" \
     --data_roots "$BASE/DNABERT2/data" "$BASE/data/finetune_data_koo" \
     --embedding_models one_hot base_dnabert2 \
+    --fallback_tokenizer "zhihan1996/DNABERT-2-117M" \
     --max_rbps 1 \
     --max_samples_per_rbp 128 \
     --num_folds 2 \
@@ -30,6 +37,9 @@ elif [[ "${1:-}" == "lamar" ]]; then
 
   OUT_DIR="$BASE/LAMAR/evalEmbeddings/results/linear_probe_embedding_quality/$RUN_TAG"
   CACHE_DIR="$BASE/LAMAR/evalEmbeddings/results/linear_probe_embedding_quality/cache/$RUN_TAG"
+
+  # Added directory creation
+  mkdir -p "$OUT_DIR" "$CACHE_DIR"
 
   python "$SCRIPT" \
     --data_roots "$BASE/DNABERT2/data" "$BASE/data/finetune_data_koo" \

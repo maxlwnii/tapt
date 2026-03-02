@@ -16,7 +16,26 @@ from transformers.modeling_outputs import (
     SequenceClassifierOutput,
     TokenClassifierOutput,
 )
-from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer, ModuleUtilsMixin
+from transformers.modeling_utils import PreTrainedModel, ModuleUtilsMixin
+# prune_linear_layer moved to pytorch_utils in newer transformers; find_pruneable_heads_and_indices was removed
+try:
+    from transformers.modeling_utils import find_pruneable_heads_and_indices, prune_linear_layer
+except ImportError:
+    try:
+        from transformers.pytorch_utils import prune_linear_layer
+    except ImportError:
+        def prune_linear_layer(layer, index, dim=0):
+            raise NotImplementedError("prune_linear_layer not available in this transformers version")
+    def find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
+        """Compatible replacement: find attention head indices for pruning."""
+        mask = torch.ones(n_heads, head_size)
+        heads = set(heads) - already_pruned_heads
+        for head in heads:
+            head = head - sum(1 if h < head else 0 for h in already_pruned_heads)
+            mask[head] = 0
+        mask = mask.view(-1).contiguous().eq(1)
+        index: torch.LongTensor = torch.arange(len(mask))[mask].long()
+        return heads, index
 from transformers.utils import logging
 from transformers.models.esm.configuration_esm import EsmConfig
 

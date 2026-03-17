@@ -1,0 +1,131 @@
+{
+  "vs_reference": {
+    "wilcoxon_lamar_pretrained_L1_vs_lamar_tapt_L6": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.04132478412975793,
+      "reference_model": "lamar_tapt_L6"
+    },
+    "wilcoxon_lamar_random_L2_vs_lamar_tapt_L6": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.02762055978679776,
+      "reference_model": "lamar_tapt_L6"
+    },
+    "wilcoxon_lamar_tapt_custom_1gpu_L12_vs_lamar_tapt_L6": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.02677238384311006,
+      "reference_model": "lamar_tapt_L6"
+    },
+    "wilcoxon_lamar_tapt_standard_1gpu_L6_vs_lamar_tapt_L6": {
+      "statistic": 19.0,
+      "pvalue": 0.0023345947265625,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.005446181292494307,
+      "reference_model": "lamar_tapt_L6"
+    },
+    "wilcoxon_scratch_lamar_L1_vs_lamar_tapt_L6": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.0293481516818446,
+      "reference_model": "lamar_tapt_L6"
+    }
+  },
+  "pairwise": {
+    "lamar_pretrained_L1_vs_lamar_random_L2": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.013704224342960172
+    },
+    "lamar_pretrained_L1_vs_lamar_tapt_L6": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.04132478412975793
+    },
+    "lamar_pretrained_L1_vs_lamar_tapt_custom_1gpu_L12": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.014552400286647869
+    },
+    "lamar_pretrained_L1_vs_lamar_tapt_standard_1gpu_L6": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.03587860283726362
+    },
+    "lamar_pretrained_L1_vs_scratch_lamar_L1": {
+      "statistic": 4.0,
+      "pvalue": 5.340576171875e-05,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.011976632447913329
+    },
+    "lamar_random_L2_vs_lamar_tapt_L6": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.02762055978679776
+    },
+    "lamar_random_L2_vs_lamar_tapt_custom_1gpu_L12": {
+      "statistic": 71.0,
+      "pvalue": 0.550872802734375,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.0008481759436876963
+    },
+    "lamar_random_L2_vs_lamar_tapt_standard_1gpu_L6": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.02217437849430345
+    },
+    "lamar_random_L2_vs_scratch_lamar_L1": {
+      "statistic": 50.0,
+      "pvalue": 0.12973785400390625,
+      "n_rbps": 18,
+      "mean_delta_auroc": 0.0017275918950468427
+    },
+    "lamar_tapt_L6_vs_lamar_tapt_custom_1gpu_L12": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": 0.02677238384311006
+    },
+    "lamar_tapt_L6_vs_lamar_tapt_standard_1gpu_L6": {
+      "statistic": 19.0,
+      "pvalue": 0.0023345947265625,
+      "n_rbps": 18,
+      "mean_delta_auroc": 0.005446181292494307
+    },
+    "lamar_tapt_L6_vs_scratch_lamar_L1": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": 0.0293481516818446
+    },
+    "lamar_tapt_custom_1gpu_L12_vs_lamar_tapt_standard_1gpu_L6": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": -0.021326202550615753
+    },
+    "lamar_tapt_custom_1gpu_L12_vs_scratch_lamar_L1": {
+      "statistic": 52.0,
+      "pvalue": 0.15404510498046875,
+      "n_rbps": 18,
+      "mean_delta_auroc": 0.002575767838734539
+    },
+    "lamar_tapt_standard_1gpu_L6_vs_scratch_lamar_L1": {
+      "statistic": 0.0,
+      "pvalue": 7.62939453125e-06,
+      "n_rbps": 18,
+      "mean_delta_auroc": 0.023901970389350293
+    }
+  }
+}

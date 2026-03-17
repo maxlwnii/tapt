@@ -1,0 +1,78 @@
+{
+  "best_metric": 0.9782893494401075,
+  "best_model_checkpoint": "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/finetune_cross/results/cross_cell/lamar_random/HNRNPK_train_K562_test_HepG2_fixlen_101/final/checkpoint-387",
+  "epoch": 1.0,
+  "eval_steps": 500,
+  "global_step": 387,
+  "is_hyper_param_search": false,
+  "is_local_process_zero": true,
+  "is_world_process_zero": true,
+  "log_history": [
+    {
+      "epoch": 0.13,
+      "learning_rate": 6.4599483204134365e-06,
+      "loss": 0.4193,
+      "step": 50
+    },
+    {
+      "epoch": 0.26,
+      "learning_rate": 1.2919896640826873e-05,
+      "loss": 0.2709,
+      "step": 100
+    },
+    {
+      "epoch": 0.39,
+      "learning_rate": 1.937984496124031e-05,
+      "loss": 0.3461,
+      "step": 150
+    },
+    {
+      "epoch": 0.52,
+      "learning_rate": 2.5839793281653746e-05,
+      "loss": 0.2944,
+      "step": 200
+    },
+    {
+      "epoch": 0.65,
+      "learning_rate": 3.229974160206719e-05,
+      "loss": 0.3004,
+      "step": 250
+    },
+    {
+      "epoch": 0.78,
+      "learning_rate": 3.875968992248062e-05,
+      "loss": 0.2755,
+      "step": 300
+    },
+    {
+      "epoch": 0.9,
+      "learning_rate": 4.521963824289406e-05,
+      "loss": 0.2808,
+      "step": 350
+    },
+    {
+      "epoch": 1.0,
+      "eval_accuracy": 0.920997191011236,
+      "eval_auc": 0.9782893494401075,
+      "eval_auprc": 0.9669824962942883,
+      "eval_f1": 0.9131385922017758,
+      "eval_loss": 0.2338879406452179,
+      "eval_matthews_correlation": 0.8418099470823687,
+      "eval_precision": 0.8892230576441102,
+      "eval_recall": 0.9383760909812219,
+      "eval_runtime": 185.1739,
+      "eval_samples_per_second": 46.157,
+      "eval_steps_per_second": 2.889,
+      "step": 387
+    }
+  ],
+  "logging_steps": 50,
+  "max_steps": 3870,
+  "num_input_tokens_seen": 0,
+  "num_train_epochs": 10,
+  "save_steps": 500,
+  "total_flos": 3258372825907200.0,
+  "train_batch_size": 16,
+  "trial_name": null,
+  "trial_params": null
+}

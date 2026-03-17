@@ -1,0 +1,78 @@
+{
+  "best_metric": 0.6933701657458564,
+  "best_model_checkpoint": "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/finetune_cross/results/cross_cell/lamar_random/IGF2BP1_train_K562_test_HepG2_fixlen_101/fold_3/checkpoint-396",
+  "epoch": 1.0,
+  "eval_steps": 500,
+  "global_step": 396,
+  "is_hyper_param_search": false,
+  "is_local_process_zero": true,
+  "is_world_process_zero": true,
+  "log_history": [
+    {
+      "epoch": 0.13,
+      "learning_rate": 6.313131313131314e-06,
+      "loss": 0.7056,
+      "step": 50
+    },
+    {
+      "epoch": 0.25,
+      "learning_rate": 1.2626262626262628e-05,
+      "loss": 0.6835,
+      "step": 100
+    },
+    {
+      "epoch": 0.38,
+      "learning_rate": 1.893939393939394e-05,
+      "loss": 0.6939,
+      "step": 150
+    },
+    {
+      "epoch": 0.51,
+      "learning_rate": 2.5252525252525256e-05,
+      "loss": 0.698,
+      "step": 200
+    },
+    {
+      "epoch": 0.63,
+      "learning_rate": 3.1565656565656566e-05,
+      "loss": 0.6998,
+      "step": 250
+    },
+    {
+      "epoch": 0.76,
+      "learning_rate": 3.787878787878788e-05,
+      "loss": 0.7065,
+      "step": 300
+    },
+    {
+      "epoch": 0.88,
+      "learning_rate": 4.41919191919192e-05,
+      "loss": 0.6724,
+      "step": 350
+    },
+    {
+      "epoch": 1.0,
+      "eval_accuracy": 0.625,
+      "eval_auc": 0.6933701657458564,
+      "eval_auprc": 0.6445182808486074,
+      "eval_f1": 0.6417370325693607,
+      "eval_loss": 0.6556507349014282,
+      "eval_matthews_correlation": 0.2707650291587712,
+      "eval_precision": 0.569593147751606,
+      "eval_recall": 0.7348066298342542,
+      "eval_runtime": 34.2741,
+      "eval_samples_per_second": 46.245,
+      "eval_steps_per_second": 2.918,
+      "step": 396
+    }
+  ],
+  "logging_steps": 50,
+  "max_steps": 3960,
+  "num_input_tokens_seen": 0,
+  "num_train_epochs": 10,
+  "save_steps": 500,
+  "total_flos": 3334148938137600.0,
+  "train_batch_size": 16,
+  "trial_name": null,
+  "trial_params": null
+}

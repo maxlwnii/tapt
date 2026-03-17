@@ -1,0 +1,84 @@
+{
+  "best_metric": 0.7304135863451157,
+  "best_model_checkpoint": "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/finetune_cross/results/cross_cell/lamar_tapt_1024/FXR2_train_K562_test_HepG2_fixlen_101/final/checkpoint-415",
+  "epoch": 1.0,
+  "eval_steps": 500,
+  "global_step": 415,
+  "is_hyper_param_search": false,
+  "is_local_process_zero": true,
+  "is_world_process_zero": true,
+  "log_history": [
+    {
+      "epoch": 0.12,
+      "learning_rate": 6.024096385542169e-06,
+      "loss": 0.6264,
+      "step": 50
+    },
+    {
+      "epoch": 0.24,
+      "learning_rate": 1.2048192771084338e-05,
+      "loss": 0.4916,
+      "step": 100
+    },
+    {
+      "epoch": 0.36,
+      "learning_rate": 1.8072289156626505e-05,
+      "loss": 0.4665,
+      "step": 150
+    },
+    {
+      "epoch": 0.48,
+      "learning_rate": 2.4096385542168677e-05,
+      "loss": 0.4528,
+      "step": 200
+    },
+    {
+      "epoch": 0.6,
+      "learning_rate": 3.012048192771085e-05,
+      "loss": 0.5033,
+      "step": 250
+    },
+    {
+      "epoch": 0.72,
+      "learning_rate": 3.614457831325301e-05,
+      "loss": 0.4794,
+      "step": 300
+    },
+    {
+      "epoch": 0.84,
+      "learning_rate": 4.2168674698795186e-05,
+      "loss": 0.4808,
+      "step": 350
+    },
+    {
+      "epoch": 0.96,
+      "learning_rate": 4.8192771084337354e-05,
+      "loss": 0.4753,
+      "step": 400
+    },
+    {
+      "epoch": 1.0,
+      "eval_accuracy": 0.5449862637362637,
+      "eval_auc": 0.7304135863451157,
+      "eval_auprc": 0.646025175919457,
+      "eval_f1": 0.1423948220064725,
+      "eval_loss": 1.0406475067138672,
+      "eval_matthews_correlation": 0.11029410719311668,
+      "eval_precision": 0.7096774193548387,
+      "eval_recall": 0.07913669064748201,
+      "eval_runtime": 100.7453,
+      "eval_samples_per_second": 57.809,
+      "eval_steps_per_second": 3.613,
+      "step": 415
+    }
+  ],
+  "logging_steps": 50,
+  "max_steps": 4150,
+  "num_input_tokens_seen": 0,
+  "num_train_epochs": 10,
+  "save_steps": 500,
+  "total_flos": 3494120730624000.0,
+  "train_batch_size": 16,
+  "trial_name": null,
+  "trial_params": null
+}

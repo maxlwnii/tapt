@@ -1,0 +1,16 @@
+{
+  "wilcoxon_one_hot_vs_base_dnabert2": {
+    "statistic": 16.0,
+    "pvalue": 0.00128936767578125,
+    "n_rbps": 18,
+    "mean_delta_auroc": -0.03239108244790425,
+    "reference_model": "base_dnabert2"
+  },
+  "wilcoxon_random_dnabert2_vs_base_dnabert2": {
+    "statistic": 0.0,
+    "pvalue": 7.62939453125e-06,
+    "n_rbps": 18,
+    "mean_delta_auroc": -0.060304787091983975,
+    "reference_model": "base_dnabert2"
+  }
+}

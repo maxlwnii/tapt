@@ -34,7 +34,6 @@ model.safetensors
 # Output directories
 output/
 outputs/
-results/
 checkpoints/
 saving_model/
 logs_dnabert2/
@@ -54,10 +53,8 @@ data/eval_clip_data/plots/*.txt
 # LAMAR specific exclusions
 LAMAR/models/finetuned_*/
 LAMAR/models/models_koo/
-LAMAR/evalEmbeddings/results*/
 LAMAR/evalEmbeddings/models_*/
 LAMAR/evalEmbeddings/logs/
-LAMAR/evalEmbeddings/plots/
 LAMAR/evalEmbeddings/depMaps/dep_maps_*/
 LAMAR/evalEmbeddings/depMaps/test_output/
 LAMAR/visualisation/saliency_output/
@@ -173,7 +170,6 @@ DNA-Language-Model-Evaluation/
 LLM_eval/
 dependencies_DNALM/
 mRNABench/
-p_eickhoff_isoscore/
 
 # Old structure (being reorganized)
 doctest/

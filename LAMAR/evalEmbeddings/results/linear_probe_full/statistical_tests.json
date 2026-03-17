@@ -1,0 +1,9 @@
+{
+  "wilcoxon_lamar_tapt_standard_1gpu_L6_vs_lamar_tapt_custom_1gpu_L12": {
+    "statistic": 0.0,
+    "pvalue": 7.62939453125e-06,
+    "n_rbps": 18,
+    "mean_delta_auroc": 0.02132620255061576,
+    "reference_model": "lamar_tapt_custom_1gpu_L12"
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "best_metric": 0.8080791169848861,
+  "best_model_checkpoint": "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/finetune_cross/results/cross_cell/lamar_random/DROSHA_train_K562_test_HepG2_fixlen_101/final/checkpoint-377",
+  "epoch": 1.0,
+  "eval_steps": 500,
+  "global_step": 377,
+  "is_hyper_param_search": false,
+  "is_local_process_zero": true,
+  "is_world_process_zero": true,
+  "log_history": [
+    {
+      "epoch": 0.13,
+      "learning_rate": 6.631299734748012e-06,
+      "loss": 0.4875,
+      "step": 50
+    },
+    {
+      "epoch": 0.27,
+      "learning_rate": 1.3262599469496024e-05,
+      "loss": 0.3696,
+      "step": 100
+    },
+    {
+      "epoch": 0.4,
+      "learning_rate": 1.989389920424403e-05,
+      "loss": 0.4318,
+      "step": 150
+    },
+    {
+      "epoch": 0.53,
+      "learning_rate": 2.6525198938992047e-05,
+      "loss": 0.3619,
+      "step": 200
+    },
+    {
+      "epoch": 0.66,
+      "learning_rate": 3.315649867374006e-05,
+      "loss": 0.4025,
+      "step": 250
+    },
+    {
+      "epoch": 0.8,
+      "learning_rate": 3.978779840848806e-05,
+      "loss": 0.3887,
+      "step": 300
+    },
+    {
+      "epoch": 0.93,
+      "learning_rate": 4.6419098143236075e-05,
+      "loss": 0.3998,
+      "step": 350
+    },
+    {
+      "epoch": 1.0,
+      "eval_accuracy": 0.7351190476190477,
+      "eval_auc": 0.8080791169848861,
+      "eval_auprc": 0.7534900929764957,
+      "eval_f1": 0.6089139987445071,
+      "eval_loss": 0.8046355247497559,
+      "eval_matthews_correlation": 0.4468418362755797,
+      "eval_precision": 0.7797427652733119,
+      "eval_recall": 0.49948506694129763,
+      "eval_runtime": 50.759,
+      "eval_samples_per_second": 46.612,
+      "eval_steps_per_second": 2.916,
+      "step": 377
+    }
+  ],
+  "logging_steps": 50,
+  "max_steps": 3770,
+  "num_input_tokens_seen": 0,
+  "num_train_epochs": 10,
+  "save_steps": 500,
+  "total_flos": 3174177145651200.0,
+  "train_batch_size": 16,
+  "trial_name": null,
+  "trial_params": null
+}

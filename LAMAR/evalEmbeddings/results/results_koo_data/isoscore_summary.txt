@@ -1,0 +1,27 @@
+ISOSCORE ANALYSIS FOR LAMAR VARIANTS
+================================================================================
+
+Higher IsoScore = more isotropic (embeddings spread uniformly)
+Lower Avg Cosine Sim = more isotropic
+Lower Top-K SV Ratio = more isotropic (variance spread across more dimensions)
+
+   Variant  Layer  IsoScore  K_90  TotalDims  PartitionFunction  AvgCosineSim  Top5_SV_Ratio  Top10_SV_Ratio
+Pretrained      5  0.197917   152        768          97.258698      0.013758       0.311566        0.439704
+Pretrained     11  0.278646   214        768         146.234619      0.001072       0.236864        0.348526
+      TAPT      5  0.239583   184        768          95.742493      0.014056       0.328720        0.460501
+      TAPT     11  0.253906   195        768         115.151566      0.001280       0.283223        0.410963
+    Random      5  0.135417   104        768          27.337866      0.014858       0.664857        0.748976
+    Random     11  0.121094    93        768          27.330887      0.016297       0.657180        0.750646
+
+INTERPRETATION:
+----------------------------------------
+
+Layer 5:
+  Pretrained: IsoScore=0.1979, AvgCos=0.0138
+  TAPT: IsoScore=0.2396, AvgCos=0.0141
+  Random: IsoScore=0.1354, AvgCos=0.0149
+
+Layer 11:
+  Pretrained: IsoScore=0.2786, AvgCos=0.0011
+  TAPT: IsoScore=0.2539, AvgCos=0.0013
+  Random: IsoScore=0.1211, AvgCos=0.0163

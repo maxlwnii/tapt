@@ -1,0 +1,70 @@
+GC CONTENT ANALYSIS - POSITIVES vs NEGATIVES
+================================================================================
+
+HNRNPK_K562_200
+  Samples: 2863 positives, 2863 negatives
+  GC content (v1): pos=0.5750, neg=0.4062, diff=0.1688
+  GC content (v2): pos=0.4440, neg=0.5066, diff=-0.0626
+
+PTBP1_K562_200
+  Samples: 8092 positives, 8092 negatives
+  GC content (v1): pos=0.4347, neg=0.4074, diff=0.0273
+  GC content (v2): pos=0.5401, neg=0.5060, diff=0.0340
+
+PUM2_K562_200
+  Samples: 7248 positives, 7248 negatives
+  GC content (v1): pos=0.3799, neg=0.4138, diff=-0.0339
+  GC content (v2): pos=0.5384, neg=0.5082, diff=0.0302
+
+QKI_K562_200
+  Samples: 3419 positives, 3419 negatives
+  GC content (v1): pos=0.3487, neg=0.4547, diff=-0.1060
+  GC content (v2): pos=0.5024, neg=0.5062, diff=-0.0037
+
+RBFOX2_K562_200
+  Samples: 4488 positives, 4488 negatives
+  GC content (v1): pos=0.5573, neg=0.4259, diff=0.1315
+  GC content (v2): pos=0.5659, neg=0.5063, diff=0.0596
+
+SF3B4_K562_200
+  Samples: 16338 positives, 16338 negatives
+  GC content (v1): pos=0.5002, neg=0.4117, diff=0.0885
+  GC content (v2): pos=0.5279, neg=0.5082, diff=0.0196
+
+SRSF1_K562_200
+  Samples: 2997 positives, 2997 negatives
+  GC content (v1): pos=0.5429, neg=0.4429, diff=0.1000
+  GC content (v2): pos=0.5278, neg=0.5062, diff=0.0217
+
+TARDBP_K562_200
+  Samples: 6055 positives, 6055 negatives
+  GC content (v1): pos=0.4431, neg=0.4173, diff=0.0259
+  GC content (v2): pos=0.6134, neg=0.5049, diff=0.1084
+
+TIA1_K562_200
+  Samples: 9045 positives, 9045 negatives
+  GC content (v1): pos=0.4901, neg=0.5452, diff=-0.0551
+  GC content (v2): pos=0.5570, neg=0.4997, diff=0.0572
+
+U2AF1_K562_200
+  Samples: 1790 positives, 1567 negatives
+  GC content (v1): pos=0.4344, neg=0.4950, diff=-0.0606
+  GC content (v2): pos=0.5482, neg=0.5014, diff=0.0468
+
+================================================================================
+SUMMARY
+================================================================================
+
+Aggregate GC difference (positive - negative):
+  Version 1 (C=ch1, G=ch2): mean=0.0286, std=0.0871
+  Version 2 (C=ch2, G=ch3): mean=0.0311, std=0.0424
+
+RBPs with significant GC bias (|diff| > 0.08):
+  ⚠️  HNRNPK_K562_200: GC diff = 0.1688 (v1), -0.0626 (v2)
+  ⚠️  QKI_K562_200: GC diff = -0.1060 (v1), -0.0037 (v2)
+  ⚠️  RBFOX2_K562_200: GC diff = 0.1315 (v1), 0.0596 (v2)
+  ⚠️  SF3B4_K562_200: GC diff = 0.0885 (v1), 0.0196 (v2)
+  ⚠️  SRSF1_K562_200: GC diff = 0.1000 (v1), 0.0217 (v2)
+  ⚠️  TARDBP_K562_200: GC diff = 0.0259 (v1), 0.1084 (v2)
+
+Total: 6/10 RBPs have significant GC content bias

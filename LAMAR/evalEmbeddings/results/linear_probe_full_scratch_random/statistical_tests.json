@@ -1,0 +1,9 @@
+{
+  "wilcoxon_scratch_lamar_L1_vs_lamar_random_L2": {
+    "statistic": 50.0,
+    "pvalue": 0.12973785400390625,
+    "n_rbps": 18,
+    "mean_delta_auroc": -0.0017275918950468304,
+    "reference_model": "lamar_random_L2"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "wilcoxon_dnabert2_pretrained_vs_lamar_pretrained": {
+    "statistic": 238.0,
+    "pvalue": 1.326995077457105e-11,
+    "n_tasks": 82,
+    "mean_delta_auroc": 0.05904084534369161,
+    "reference_model": "lamar_pretrained"
+  },
+  "wilcoxon_dnabert2_random_vs_lamar_pretrained": {
+    "statistic": 463.0,
+    "pvalue": 1.031273971466683e-08,
+    "n_tasks": 82,
+    "mean_delta_auroc": -0.038971563571078664,
+    "reference_model": "lamar_pretrained"
+  },
+  "wilcoxon_dnabert2_tapt_vs_lamar_pretrained": {
+    "statistic": 171.0,
+    "pvalue": 1.490180604534474e-12,
+    "n_tasks": 82,
+    "mean_delta_auroc": 0.06475886140188981,
+    "reference_model": "lamar_pretrained"
+  },
+  "wilcoxon_dnabert2_tapt_v3_vs_lamar_pretrained": {
+    "statistic": 210.0,
+    "pvalue": 5.382473140735183e-12,
+    "n_tasks": 82,
+    "mean_delta_auroc": 0.06272575656475997,
+    "reference_model": "lamar_pretrained"
+  },
+  "wilcoxon_lamar_random_vs_lamar_pretrained": {
+    "statistic": 288.0,
+    "pvalue": 6.3815165343666e-11,
+    "n_tasks": 82,
+    "mean_delta_auroc": 0.018031033065581032,
+    "reference_model": "lamar_pretrained"
+  },
+  "wilcoxon_lamar_tapt_1024_vs_lamar_pretrained": {
+    "statistic": 202.0,
+    "pvalue": 4.146701485976532e-12,
+    "n_tasks": 82,
+    "mean_delta_auroc": 0.033641985881482275,
+    "reference_model": "lamar_pretrained"
+  },
+  "wilcoxon_lamar_tapt_512_vs_lamar_pretrained": {
+    "statistic": 1005.0,
+    "pvalue": 0.0012824721699027427,
+    "n_tasks": 82,
+    "mean_delta_auroc": 0.005414531830052787,
+    "reference_model": "lamar_pretrained"
+  },
+  "wilcoxon_lamar_tapt_512_std_vs_lamar_pretrained": {
+    "statistic": 133.0,
+    "pvalue": 4.13486715102856e-13,
+    "n_tasks": 82,
+    "mean_delta_auroc": 0.03682152404934309,
+    "reference_model": "lamar_pretrained"
+  },
+  "wilcoxon_one_hot_vs_lamar_pretrained": {
+    "statistic": 1411.0,
+    "pvalue": 0.1792841897018148,
+    "n_tasks": 82,
+    "mean_delta_auroc": -0.010875447218930915,
+    "reference_model": "lamar_pretrained"
+  }
+}

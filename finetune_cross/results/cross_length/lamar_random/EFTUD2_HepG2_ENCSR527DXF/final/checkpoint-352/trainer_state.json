@@ -1,0 +1,78 @@
+{
+  "best_metric": 0.9197451326543555,
+  "best_model_checkpoint": "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/finetune_cross/results/cross_length/lamar_random/EFTUD2_HepG2_ENCSR527DXF/final/checkpoint-352",
+  "epoch": 1.0,
+  "eval_steps": 500,
+  "global_step": 352,
+  "is_hyper_param_search": false,
+  "is_local_process_zero": true,
+  "is_world_process_zero": true,
+  "log_history": [
+    {
+      "epoch": 0.14,
+      "learning_rate": 7.102272727272728e-06,
+      "loss": 0.4321,
+      "step": 50
+    },
+    {
+      "epoch": 0.28,
+      "learning_rate": 1.4204545454545456e-05,
+      "loss": 0.3808,
+      "step": 100
+    },
+    {
+      "epoch": 0.43,
+      "learning_rate": 2.1306818181818183e-05,
+      "loss": 0.3956,
+      "step": 150
+    },
+    {
+      "epoch": 0.57,
+      "learning_rate": 2.8409090909090912e-05,
+      "loss": 0.3969,
+      "step": 200
+    },
+    {
+      "epoch": 0.71,
+      "learning_rate": 3.5511363636363635e-05,
+      "loss": 0.4064,
+      "step": 250
+    },
+    {
+      "epoch": 0.85,
+      "learning_rate": 4.261363636363637e-05,
+      "loss": 0.3991,
+      "step": 300
+    },
+    {
+      "epoch": 0.99,
+      "learning_rate": 4.971590909090909e-05,
+      "loss": 0.3862,
+      "step": 350
+    },
+    {
+      "epoch": 1.0,
+      "eval_accuracy": 0.7978982300884956,
+      "eval_auc": 0.9197451326543555,
+      "eval_auprc": 0.9145982933777856,
+      "eval_f1": 0.7410347271438695,
+      "eval_loss": 0.4774857461452484,
+      "eval_matthews_correlation": 0.6217319213945477,
+      "eval_precision": 0.9349070100143062,
+      "eval_recall": 0.6137590983799014,
+      "eval_runtime": 196.7816,
+      "eval_samples_per_second": 46.005,
+      "eval_steps_per_second": 2.876,
+      "step": 352
+    }
+  ],
+  "logging_steps": 50,
+  "max_steps": 3520,
+  "num_input_tokens_seen": 0,
+  "num_train_epochs": 10,
+  "save_steps": 500,
+  "total_flos": 2963687945011200.0,
+  "train_batch_size": 16,
+  "trial_name": null,
+  "trial_params": null
+}

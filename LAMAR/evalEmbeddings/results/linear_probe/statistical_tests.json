@@ -1,0 +1,9 @@
+{
+  "wilcoxon_lamar_tapt_L6_vs_lamar_pretrained_L1": {
+    "statistic": 0.0,
+    "pvalue": 7.62939453125e-06,
+    "n_rbps": 18,
+    "mean_delta_auroc": 0.04132478412975793,
+    "reference_model": "lamar_pretrained_L1"
+  }
+}

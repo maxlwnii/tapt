@@ -95,15 +95,39 @@ def parse_args() -> argparse.Namespace:
         "--tapt_checkpoint",
         type=str,
         default="/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/src/pretrain/saving_model/tapt_1024_standard_collator/checkpoint-134000",
-        help="Path to TAPT checkpoint directory (must contain model.safetensors)",
+        help="Path to original TAPT checkpoint directory (tapt_1024_standard_collator)",
+    )
+    p.add_argument(
+        "--tapt_standard_1gpu_checkpoint",
+        type=str,
+        default="/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/src/pretrain/saving_model/tapt_1024_standard_collator_1gpu/checkpoint-232000",
+        help="Path to 1-GPU standard-collator TAPT checkpoint (checkpoint-232000)",
+    )
+    p.add_argument(
+        "--tapt_custom_1gpu_checkpoint",
+        type=str,
+        default="/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/src/pretrain/saving_model/tapt_1024_custom_collator_1gpu/checkpoint-232000",
+        help="Path to 1-GPU custom-collator TAPT checkpoint (checkpoint-196000)",
+    )
+    p.add_argument(
+        "--scratch_lamar_checkpoint",
+        type=str,
+        default="/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/src/pretrain/saving_model/tapt_lamar/checkpoint-98000",
+        help="Path to LAMAR trained from scratch checkpoint (tapt_lamar/checkpoint-98000)",
+    )
+    p.add_argument(
+        "--tapt_512_checkpoint",
+        type=str,
+        default="/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/src/pretrain/saving_model/tapt_512_standard_collator_1gpu/checkpoint-265000",
+        help="Path to 512-token standard-collator TAPT checkpoint (checkpoint-265000)",
     )
 
     # --- Which models to run ---
     p.add_argument(
         "--models",
         nargs="+",
-        default=["lamar_pretrained", "lamar_tapt"],
-        choices=["lamar_pretrained", "lamar_tapt"],
+        default=["lamar_tapt_custom_1gpu", "lamar_tapt_standard_1gpu"],
+        choices=["lamar_pretrained", "lamar_tapt", "lamar_tapt_standard_1gpu", "lamar_tapt_custom_1gpu", "lamar_tapt_512_std", "lamar_random", "scratch_lamar"],
         help="Which model variants to evaluate",
     )
 
@@ -288,6 +312,37 @@ def build_lamar_model(tokenizer, weights_path: str, device: torch.device) -> Esm
     if result.unexpected_keys:
         print(f"  [WARN] Unexpected weight keys: {result.unexpected_keys[:5]}")
 
+    model.to(device)
+    model.eval()
+    return model
+
+
+def _wolf_init_weights(module: torch.nn.Module) -> None:
+    """Wolf (GPT-style) weight initialisation used by LAMAR fine-tuning."""
+    if isinstance(module, torch.nn.Linear):
+        torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.bias is not None:
+            torch.nn.init.zeros_(module.bias)
+    elif isinstance(module, torch.nn.Embedding):
+        torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.padding_idx is not None:
+            module.weight.data[module.padding_idx].zero_()
+    elif isinstance(module, torch.nn.LayerNorm):
+        torch.nn.init.ones_(module.weight)
+        torch.nn.init.zeros_(module.bias)
+
+
+def build_lamar_model_random(tokenizer, device: torch.device, seed: int) -> EsmForMaskedLM:
+    """
+    Build a randomly-initialised EsmForMaskedLM (same architecture as LAMAR)
+    using Wolf (GPT-style) initialisation with a *fixed seed* so the weights
+    are identical across every RBP probe.
+    """
+    set_seed(seed)
+    config = _build_lamar_config(tokenizer)
+    model = EsmForMaskedLM(config)
+    model.apply(_wolf_init_weights)
+    print(f"  [lamar_random] Wolf-initialised with seed={seed}")
     model.to(device)
     model.eval()
     return model
@@ -718,14 +773,27 @@ def main() -> None:
     print(f"Loaded {len(tasks)} RBP tasks")
 
     # --- Define model variants ---
+    # '__random__' is a sentinel meaning: randomly-initialised, no weights loaded.
     model_weight_paths: Dict[str, str] = {}
     if "lamar_pretrained" in args.models:
         model_weight_paths["lamar_pretrained"] = args.pretrained_weights
     if "lamar_tapt" in args.models:
         model_weight_paths["lamar_tapt"] = args.tapt_checkpoint
+    if "lamar_tapt_standard_1gpu" in args.models:
+        model_weight_paths["lamar_tapt_standard_1gpu"] = args.tapt_standard_1gpu_checkpoint
+    if "lamar_tapt_custom_1gpu" in args.models:
+        model_weight_paths["lamar_tapt_custom_1gpu"] = args.tapt_custom_1gpu_checkpoint
+    if "lamar_random" in args.models:
+        model_weight_paths["lamar_random"] = "__random__"
+    if "scratch_lamar" in args.models:
+        model_weight_paths["scratch_lamar"] = args.scratch_lamar_checkpoint
+    if "lamar_tapt_512_std" in args.models:
+        model_weight_paths["lamar_tapt_512_std"] = args.tapt_512_checkpoint
 
-    # Validate paths
+    # Validate paths (skip sentinel)
     for name, wpath in list(model_weight_paths.items()):
+        if wpath == "__random__":
+            continue
         if not Path(wpath).exists():
             print(f"[WARN] Weights not found for '{name}': {wpath} — skipping")
             del model_weight_paths[name]
@@ -767,7 +835,10 @@ def main() -> None:
 
         for model_name, wpath in model_weight_paths.items():
             print(f"\n  Loading {model_name} for layer search …")
-            model = build_lamar_model(tokenizer, wpath, device)
+            if wpath == "__random__":
+                model = build_lamar_model_random(tokenizer, device, seed=args.seed)
+            else:
+                model = build_lamar_model(tokenizer, wpath, device)
             best = run_layer_search(
                 sequences=pilot_seqs,
                 labels=pilot_labels,
@@ -800,7 +871,11 @@ def main() -> None:
         print(f"Weights: {wpath}")
         print(f"{'='*60}")
 
-        model = build_lamar_model(tokenizer, wpath, device)
+        if wpath == "__random__":
+            # Seed is fixed here so all RBPs see the exact same model weights.
+            model = build_lamar_model_random(tokenizer, device, seed=args.seed)
+        else:
+            model = build_lamar_model(tokenizer, wpath, device)
 
         for rbp, df in sorted(tasks.items()):
             if args.max_samples_per_rbp > 0 and len(df) > args.max_samples_per_rbp:

@@ -1,0 +1,45 @@
+{
+  "experiment": "cross_cell",
+  "model_type": "lamar",
+  "variant": "pretrained",
+  "pair_name": "AGGF1_train_K562_test_HepG2_fixlen_101",
+  "pretrain_path": "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis/LAMAR/weights",
+  "max_length": 1024,
+  "hyperparameters": {
+    "learning_rate": 5e-05,
+    "per_device_train_batch_size": 16,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1,
+    "num_train_epochs": 10,
+    "gradient_accumulation_steps": 1,
+    "early_stopping_patience": 3
+  },
+  "val_metrics": {
+    "eval_loss": 0.6331329345703125,
+    "eval_accuracy": 0.7052469135802469,
+    "eval_f1": 0.6527272727272727,
+    "eval_precision": 0.6539162112932605,
+    "eval_recall": 0.6515426497277677,
+    "eval_auc": 0.7431320722542296,
+    "eval_auprc": 0.7449780133059988,
+    "eval_matthews_correlation": 0.3966985504992723,
+    "eval_runtime": 7.8377,
+    "eval_samples_per_second": 165.866,
+    "eval_steps_per_second": 10.462,
+    "epoch": 10.0
+  },
+  "test_metrics": {
+    "eval_loss": 0.6558755040168762,
+    "eval_accuracy": 0.6888089005235603,
+    "eval_f1": 0.6062111801242236,
+    "eval_precision": 0.5995085995085995,
+    "eval_recall": 0.6130653266331658,
+    "eval_auc": 0.7309650652114854,
+    "eval_auprc": 0.6911204895994671,
+    "eval_matthews_correlation": 0.3490883616572559,
+    "eval_runtime": 18.5086,
+    "eval_samples_per_second": 165.113,
+    "eval_steps_per_second": 10.32,
+    "epoch": 10.0
+  }
+}

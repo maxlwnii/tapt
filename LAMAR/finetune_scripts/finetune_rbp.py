@@ -481,7 +481,7 @@ def main():
             max_grad_norm=args.grad_clipping_norm if hasattr(args, 'grad_clipping_norm') else 1.0,
             gradient_accumulation_steps=args.accum_steps if hasattr(args, 'accum_steps') else 1,
             output_dir=args.output_dir,
-            evaluation_strategy="steps",
+            eval_strategy="steps",
             eval_steps=eval_steps,
             save_strategy='steps',
             save_steps=save_steps,
@@ -551,7 +551,7 @@ def main():
                     
                     warmup_args = TrainingArguments(
                         output_dir=f"{fold_output_dir}/warmup",
-                        evaluation_strategy="epoch",
+                        eval_strategy="epoch",
                         save_strategy="epoch",
                         learning_rate=args.lr,
                         per_device_train_batch_size=args.batch_size,
@@ -681,7 +681,7 @@ def main():
                 
                 warmup_args = TrainingArguments(
                     output_dir=f"{args.output_dir}/warmup",
-                    evaluation_strategy="epoch",
+                    eval_strategy="epoch",
                     save_strategy="epoch",
                     learning_rate=args.lr,
                     per_device_train_batch_size=args.batch_size,

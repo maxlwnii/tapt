@@ -1,0 +1,44 @@
+{
+  "experiment": "cross_cell",
+  "model_type": "dnabert2",
+  "variant": "pretrained",
+  "pair_name": "AGGF1_train_K562_test_HepG2_fixlen_101",
+  "max_length": 128,
+  "hyperparameters": {
+    "learning_rate": 5e-05,
+    "per_device_train_batch_size": 16,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1,
+    "num_train_epochs": 10,
+    "gradient_accumulation_steps": 1,
+    "early_stopping_patience": 3
+  },
+  "val_metrics": {
+    "eval_loss": 0.6071788668632507,
+    "eval_accuracy": 0.7046153846153846,
+    "eval_f1": 0.6644033613445378,
+    "eval_matthews_correlation": 0.39417249035089413,
+    "eval_precision": 0.7317579605888893,
+    "eval_recall": 0.6676015267767186,
+    "eval_auc": 0.7564083933968845,
+    "eval_auprc": 0.7385968314278318,
+    "eval_runtime": 0.6415,
+    "eval_samples_per_second": 2026.473,
+    "eval_steps_per_second": 127.824,
+    "epoch": 10.0
+  },
+  "test_metrics": {
+    "eval_loss": 0.5923352241516113,
+    "eval_accuracy": 0.7352748691099477,
+    "eval_f1": 0.6916917271433176,
+    "eval_matthews_correlation": 0.42882387701790836,
+    "eval_precision": 0.7473489412825287,
+    "eval_recall": 0.6858608293886187,
+    "eval_auc": 0.7389435541473929,
+    "eval_auprc": 0.7296099395379843,
+    "eval_runtime": 1.5316,
+    "eval_samples_per_second": 1995.254,
+    "eval_steps_per_second": 124.703,
+    "epoch": 10.0
+  }
+}

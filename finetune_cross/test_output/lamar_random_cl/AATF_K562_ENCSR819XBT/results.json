@@ -1,0 +1,45 @@
+{
+  "experiment": "cross_length",
+  "model_type": "lamar",
+  "variant": "random",
+  "pair_name": "AATF_K562_ENCSR819XBT",
+  "pretrain_path": "",
+  "max_length": 1024,
+  "hyperparameters": {
+    "learning_rate": 5e-05,
+    "per_device_train_batch_size": 16,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1,
+    "num_train_epochs": 10,
+    "gradient_accumulation_steps": 1,
+    "early_stopping_patience": 3
+  },
+  "val_metrics": {
+    "eval_loss": 0.617157518863678,
+    "eval_accuracy": 0.6339285714285714,
+    "eval_f1": 0.6371681415929203,
+    "eval_precision": 0.4864864864864865,
+    "eval_recall": 0.9230769230769231,
+    "eval_auc": 0.8528275377590446,
+    "eval_auprc": 0.7720311920745808,
+    "eval_matthews_correlation": 0.4050263011676015,
+    "eval_runtime": 0.6785,
+    "eval_samples_per_second": 181.291,
+    "eval_steps_per_second": 11.791,
+    "epoch": 5.0
+  },
+  "test_metrics": {
+    "eval_loss": 0.6161487698554993,
+    "eval_accuracy": 0.6279296875,
+    "eval_f1": 0.6762956669498725,
+    "eval_precision": 0.581021897810219,
+    "eval_recall": 0.8089430894308943,
+    "eval_auc": 0.7671656274833425,
+    "eval_auprc": 0.7771531338066002,
+    "eval_matthews_correlation": 0.2860900123419623,
+    "eval_runtime": 6.2188,
+    "eval_samples_per_second": 164.822,
+    "eval_steps_per_second": 10.452,
+    "epoch": 5.0
+  }
+}

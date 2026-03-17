@@ -53,6 +53,66 @@ def load_model(model_path: str, fallback_model: str):
             return AutoModel.from_config(cfg)
         return AutoModel.from_pretrained(fallback_model, trust_remote_code=True, low_cpu_mem_usage=False)
 
+    def _load_state_dict(path: Path) -> dict:
+        if path.is_dir():
+            st_file = path / "model.safetensors"
+            if st_file.exists():
+                from safetensors.torch import load_file
+                return load_file(str(st_file))
+            pt_file = path / "pytorch_model.bin"
+            if pt_file.exists():
+                state = torch.load(str(pt_file), map_location="cpu", weights_only=False)
+                if isinstance(state, dict):
+                    return state.get("state_dict", state.get("model", state))
+            raise FileNotFoundError(f"No model.safetensors or pytorch_model.bin in {path}")
+        if path.suffix.lower() == ".safetensors" or path.name == "weights":
+            from safetensors.torch import load_file
+            return load_file(str(path))
+        state = torch.load(str(path), map_location="cpu", weights_only=False)
+        if isinstance(state, dict):
+            return state.get("state_dict", state.get("model", state))
+        return state
+
+    def _needs_remote_code_fallback(path: Path) -> bool:
+        config_json = path / "config.json"
+        if not path.is_dir() or not config_json.exists():
+            return False
+        with open(config_json) as f:
+            cfg = json.load(f)
+        auto_map = cfg.get("auto_map") or {}
+        uses_local_custom_code = any(
+            isinstance(value, str) and "--" not in value and "." in value
+            for value in auto_map.values()
+        )
+        missing_files = [
+            name for name in (
+                "configuration_bert.py",
+                "bert_layers.py",
+                "bert_padding.py",
+                "flash_attn_triton.py",
+            )
+            if not (path / name).exists()
+        ]
+        if uses_local_custom_code and missing_files:
+            print(f"  [layer_search] Fallback to remote code for {path}; missing {missing_files}")
+            return True
+        return False
+
+    def _load_config_with_fallback(path: Path):
+        if _needs_remote_code_fallback(path):
+            cfg = AutoConfig.from_pretrained(fallback_model, trust_remote_code=True)
+            with open(path / "config.json") as f:
+                local_cfg = json.load(f)
+            for key, value in local_cfg.items():
+                if key in {"auto_map", "_name_or_path", "transformers_version"}:
+                    continue
+                try:
+                    object.__setattr__(cfg, key, value)
+                except Exception:
+                    pass
+            return cfg
+        return AutoConfig.from_pretrained(str(path), trust_remote_code=True)
+
     p = Path(model_path)
 
     # ── HuggingFace model ID (not a local path at all) ───────────────────────
@@ -65,21 +125,19 @@ def load_model(model_path: str, fallback_model: str):
     # ── Local weights file (.safetensors / LAMAR 'weights') ──────────────────
     if p.is_file():
         model = _build_base()
-        suffix = p.suffix.lower()
-        if suffix == ".safetensors" or p.name == "weights":
-            from safetensors.torch import load_file
-            state = load_file(str(p))
-        else:
-            state = torch.load(str(p), map_location="cpu", weights_only=False)
-            if isinstance(state, dict):
-                state = state.get("state_dict", state.get("model", state))
+        state = _load_state_dict(p)
         model.load_state_dict(state, strict=False)
         return model
 
     # ── Local directory with config.json ─────────────────────────────────────
     config_json = p / "config.json"
     if config_json.exists():
-        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        if _needs_remote_code_fallback(p):
+            model = _build_base()
+            state = _load_state_dict(p)
+            model.load_state_dict(state, strict=False)
+            return model
+        config = _load_config_with_fallback(p)
         return AutoModel.from_pretrained(model_path, trust_remote_code=True, config=config)
 
     # ── Local directory without config.json (LAMAR tapt checkpoint) ──────────

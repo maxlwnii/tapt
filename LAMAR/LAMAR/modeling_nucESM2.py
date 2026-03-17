@@ -16,7 +16,8 @@ from transformers.modeling_outputs import (
     SequenceClassifierOutput,
     TokenClassifierOutput,
 )
-from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer, ModuleUtilsMixin
+from transformers.modeling_utils import PreTrainedModel, ModuleUtilsMixin
+from transformers.pytorch_utils import find_pruneable_heads_and_indices, prune_linear_layer
 from transformers.utils import logging
 from transformers.models.esm.configuration_esm import EsmConfig
 

@@ -49,6 +49,12 @@ def parse_args() -> argparse.Namespace:
         help="HF id or local path for base DNABERT2",
     )
     p.add_argument(
+        "--tapt_dnabert2_model",
+        type=str,
+        default=None,
+        help="HF id or local path for TAPT-continued DNABERT2 checkpoint",
+    )
+    p.add_argument(
         "--fallback_tokenizer",
         type=str,
         default="zhihan1996/DNABERT-2-117M",
@@ -108,6 +114,21 @@ def parse_args() -> argparse.Namespace:
 def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
+
+
+def _wolf_init_weights(module: torch.nn.Module) -> None:
+    """Wolf (GPT-style) weight initialisation — matches LAMAR/DNABERT2 fine-tuning init."""
+    if isinstance(module, torch.nn.Linear):
+        torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.bias is not None:
+            torch.nn.init.zeros_(module.bias)
+    elif isinstance(module, torch.nn.Embedding):
+        torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.padding_idx is not None:
+            module.weight.data[module.padding_idx].zero_()
+    elif isinstance(module, torch.nn.LayerNorm):
+        torch.nn.init.ones_(module.weight)
+        torch.nn.init.zeros_(module.bias)
 
 
 def find_column(columns: List[str], candidates: List[str]) -> str:
@@ -223,35 +244,110 @@ def _materialize_meta_tensors(model: torch.nn.Module) -> torch.nn.Module:
     return model
 
 
+def _load_state_dict_from_path(model_path: str) -> dict:
+    p = Path(model_path)
+    if p.is_dir():
+        st = p / "model.safetensors"
+        if st.exists():
+            from safetensors.torch import load_file
+            return load_file(str(st))
+        pb = p / "pytorch_model.bin"
+        if pb.exists():
+            state = torch.load(str(pb), map_location="cpu", weights_only=False)
+            if isinstance(state, dict):
+                return state.get("state_dict", state.get("model", state))
+        raise FileNotFoundError(f"No model.safetensors or pytorch_model.bin in {model_path}")
+    if p.suffix == ".safetensors":
+        from safetensors.torch import load_file
+        return load_file(str(p))
+    state = torch.load(str(p), map_location="cpu", weights_only=False)
+    if isinstance(state, dict):
+        return state.get("state_dict", state.get("model", state))
+    return state
+
+
+def _dnabert2_needs_remote_code_fallback(model_path: str) -> bool:
+    p = Path(model_path)
+    config_path = p / "config.json"
+    if not p.is_dir() or not config_path.exists():
+        return False
+    with open(config_path) as f:
+        cfg = json.load(f)
+    auto_map = cfg.get("auto_map") or {}
+    uses_local_custom_code = any(
+        isinstance(value, str) and "--" not in value and "." in value
+        for value in auto_map.values()
+    )
+    missing_files = [
+        name for name in (
+            "configuration_bert.py",
+            "bert_layers.py",
+            "bert_padding.py",
+            "flash_attn_triton.py",
+        )
+        if not (p / name).exists()
+    ]
+    if uses_local_custom_code and missing_files:
+        print(f"[INFO] Fallback to remote DNABERT-2 code for {model_path}; missing {missing_files}")
+        return True
+    return False
+
+
+def _load_dnabert2_config(model_path: str, fallback_model: str, pad_token_id: int):
+    if _dnabert2_needs_remote_code_fallback(model_path):
+        config = AutoConfig.from_pretrained(fallback_model, trust_remote_code=True)
+        with open(Path(model_path) / "config.json") as f:
+            local_cfg = json.load(f)
+        for key, value in local_cfg.items():
+            if key in {"auto_map", "_name_or_path", "transformers_version"}:
+                continue
+            try:
+                object.__setattr__(config, key, value)
+            except Exception:
+                pass
+    else:
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    if not hasattr(config, "pad_token_id") or getattr(config, "pad_token_id") is None:
+        object.__setattr__(config, "pad_token_id", int(pad_token_id))
+    return config
+
+
 def load_model_for_embeddings(model_path: str, pad_token_id: int):
     print(f"[INFO] Loading model: {model_path}")
 
-    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-    
-    # Use object.__setattr__ to bypass any custom property setters
-    if not hasattr(config, "pad_token_id") or getattr(config, "pad_token_id") is None:
-        object.__setattr__(config, "pad_token_id", int(pad_token_id))
+    fallback_model = "zhihan1996/DNABERT-2-117M"
+    config = _load_dnabert2_config(model_path, fallback_model, pad_token_id)
 
-    model = AutoModel.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-        config=config,
-        _fast_init=False,       # <-- this is the key fix; skips meta-device init
-    )
+    if _dnabert2_needs_remote_code_fallback(model_path):
+        model = AutoModel.from_config(config, trust_remote_code=True)
+        state_dict = _load_state_dict_from_path(model_path)
+        result = model.load_state_dict(state_dict, strict=False)
+        non_trivial = [k for k in result.missing_keys if "position_ids" not in k]
+        if non_trivial:
+            print(f"[WARN] Missing keys after fallback load: {non_trivial[:5]}")
+    else:
+        model = AutoModel.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            config=config,
+            _fast_init=False,
+        )
 
     # Materialize any tensors that ended up on the meta device
     model = _materialize_meta_tensors(model)
     return model
 
-def load_model_random_init(config_path: str, pad_token_id: int):
-    """Architecture loaded from config but with RANDOM weights – lower-bound baseline."""
-    config = AutoConfig.from_pretrained(config_path, trust_remote_code=True)
-    if not hasattr(config, "pad_token_id") or getattr(config, "pad_token_id") is None:
-        config.pad_token_id = int(pad_token_id)
+def load_model_random_init(config_path: str, pad_token_id: int, seed: int = 42):
+    """Architecture loaded from config but with Wolf-initialised random weights – lower-bound baseline."""
+    set_seed(seed)
+    fallback_model = "zhihan1996/DNABERT-2-117M"
+    config_source = fallback_model if _dnabert2_needs_remote_code_fallback(config_path) else config_path
+    config = _load_dnabert2_config(config_source, fallback_model, pad_token_id)
     model = AutoModel.from_config(config, trust_remote_code=True)
+    model.apply(_wolf_init_weights)
     model = _materialize_meta_tensors(model)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[INFO] Random-init model from {config_path} ({n_params:,} params)")
+    print(f"[INFO] Wolf-init random model from {config_path} ({n_params:,} params, seed={seed})")
     return model
 
 
@@ -283,7 +379,7 @@ def transformer_embeddings(
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
     if is_random_init:
-        model = load_model_random_init(model_path, pad_token_id=pad_token_id)
+        model = load_model_random_init(model_path, pad_token_id=pad_token_id, seed=42)
     else:
         model = load_model_for_embeddings(model_path=model_path, pad_token_id=pad_token_id)
         
@@ -549,6 +645,8 @@ def main() -> None:
         "base_dnabert2": args.base_model,
         "random_dnabert2": args.base_model,
     }
+    if args.tapt_dnabert2_model:
+        raw_model_specs["tapt_dnabert2"] = args.tapt_dnabert2_model
     
     model_specs = {}
     for name, model_ref in raw_model_specs.items():

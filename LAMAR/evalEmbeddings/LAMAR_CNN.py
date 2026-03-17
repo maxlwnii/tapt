@@ -1,36 +1,73 @@
 """
 LAMAR_CNN.py
 ------------
-LAMAR (all variants) + layer search + CNN evaluation.
+LAMAR (all canonical variants) + per-RBP layer search + CNN evaluation.
 
-Evaluates four LAMAR model variants on every RBP task found under --data_roots:
-  pretrained   – base LAMAR weights (LAMAR/weights safetensors)
-  tapt_1024    – TAPT checkpoint-131000 (tapt_1024_standard_collator)
-  tapt_lamar   – TAPT checkpoint-98000  (tapt_lamar)
-  random       – random initialisation (same architecture, no pretraining)
+Evaluated variants:
+    lamar_pretrained
+    lamar_tapt_1024
+    lamar_tapt_standard_1gpu
+    lamar_tapt_custom_1gpu
+    lamar_tapt_512
+    lamar_tapt_512_std
+    lamar_random
 
-For each variant:
-  Step 1 – Layer search  : probes all transformer layers via mean-pool +
-                           logistic regression on a pilot RBP.  Picks the layer
-                           with the highest AUROC.  Result is cached.
-  Step 2 – CNN training  : extracts per-token hidden states (seq_len, 768) from
-                           the best layer, then trains the 1-D CNN (N_REPEATS
-                           per RBP) and records AUROC / AUPR / Accuracy.
+For each (variant, RBP):
+    1. Run layer search on that RBP's train+dev split
+    2. Extract per-token hidden states from the best layer
+    3. Train the same 1-D CNN with the same hyperparameters used in DNABERT2_CNN.py
+    4. Evaluate on the held-out test split
 
+Only the LAMAR input length differs by variant (512 or 1024).
 Results are saved incrementally to --output_dir/LAMAR_CNN_results.csv.
-Already-completed (model_variant, task_id) pairs are skipped on re-runs.
 """
 
 from __future__ import annotations
 
 import argparse
 import glob
+import gc
+import json
 import os
+import shutil
 import sys
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+
+def _configure_xla_cuda_data_dir() -> None:
+    xla_flags = os.environ.get("XLA_FLAGS", "")
+    if "--xla_gpu_cuda_data_dir=" in xla_flags:
+        return
+
+    candidate_roots: List[str] = []
+    for env_var in ("CUDA_HOME", "CUDA_PATH", "CUDA_ROOT", "CUDA_DIR"):
+        value = os.environ.get(env_var)
+        if value:
+            candidate_roots.append(value)
+
+    candidate_roots.extend(["/usr/local/cuda", "/opt/cuda"])
+    candidate_roots.extend(sorted(glob.glob("/usr/local/cuda-*"), reverse=True))
+
+    seen = set()
+    for root in candidate_roots:
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        libdevice = os.path.join(root, "nvvm", "libdevice", "libdevice.10.bc")
+        if os.path.exists(libdevice):
+            append_flag = f"--xla_gpu_cuda_data_dir={root}"
+            os.environ["XLA_FLAGS"] = (
+                f"{xla_flags} {append_flag}".strip() if xla_flags else append_flag
+            )
+            return
+
 
 # TF log level must be set before the import
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
+os.environ["TF_DISABLE_MKL"] = "0"
+_configure_xla_cuda_data_dir()
 
 import numpy as np
 import pandas as pd
@@ -52,10 +89,26 @@ if str(_LAMAR_PKG_ROOT) not in sys.path:
 from LAMAR.modeling_nucESM2 import EsmForMaskedLM  # noqa: E402
 
 # ── device setup ──────────────────────────────────────────────────────────────
-tf.config.set_visible_devices([], "GPU")   # TF → CPU only
+tf.config.optimizer.set_jit(False)
+tf.config.optimizer.set_experimental_options(
+    {
+        "disable_meta_optimizer": False,
+        "auto_mixed_precision": False,
+        "constant_folding": True,
+        "arithmetic_optimization": True,
+        "dependency_optimization": True,
+        "layout_optimizer": False,
+        "remapping": False,
+        "auto_parallel": False,
+    }
+)
+tf_gpus = tf.config.list_physical_devices("GPU")
+for gpu in tf_gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-print(f"TensorFlow  : {tf.__version__}  (CPU only)")
+print(f"TensorFlow  : {tf.__version__}  (GPUs visible: {len(tf_gpus)})")
 print(f"PyTorch     : {torch.__version__}")
 print(f"CUDA (torch): {torch.cuda.is_available()}")
 if torch.cuda.is_available():
@@ -69,8 +122,8 @@ print(f"PyTorch device: {device}")
 _BASE = "/gpfs/bwfor/work/ws/fr_ml642-thesis_work/Thesis"
 
 _DATA_ROOTS = [
-    "/home/fr/fr_fr/fr_ml642/Thesis/DNABERT2/data",
-    "/home/fr/fr_fr/fr_ml642/Thesis/data/finetune_data_koo",
+    f"{_BASE}/DNABERT2/data",
+    f"{_BASE}/data/finetune_data_koo",
 ]
 
 _TOKENIZER_PATH = (
@@ -79,53 +132,78 @@ _TOKENIZER_PATH = (
 )
 
 _MODEL_VARIANTS = {
-    "pretrained": f"{_BASE}/LAMAR/weights",
-    "tapt_1024":  f"{_BASE}/LAMAR/src/pretrain/saving_model"
-                  "/tapt_1024_standard_collator/checkpoint-134000",
-    "tapt_lamar": f"{_BASE}/LAMAR/src/pretrain/saving_model"
-                  "/tapt_lamar/checkpoint-98000",
-    "random":     None,   # random init – no weights file
+    "lamar_pretrained": {
+        "weights_path": f"{_BASE}/LAMAR/weights",
+        "max_length": 1024,
+        "hidden_dim": 768,
+    },
+    "lamar_tapt_1024": {
+        "weights_path": f"{_BASE}/LAMAR/src/pretrain/saving_model"
+                        "/tapt_1024_standard_collator/checkpoint-134000",
+        "max_length": 1024,
+        "hidden_dim": 768,
+    },
+    "lamar_tapt_standard_1gpu": {
+        "weights_path": f"{_BASE}/LAMAR/src/pretrain/saving_model"
+                        "/tapt_1024_standard_collator_1gpu/checkpoint-232000",
+        "max_length": 1024,
+        "hidden_dim": 768,
+    },
+    "lamar_tapt_custom_1gpu": {
+        "weights_path": f"{_BASE}/LAMAR/src/pretrain/saving_model"
+                        "/tapt_1024_custom_collator_1gpu/checkpoint-232000",
+        "max_length": 1024,
+        "hidden_dim": 768,
+    },
+    "lamar_tapt_512": {
+        "weights_path": f"{_BASE}/LAMAR/src/pretrain/saving_model"
+                        "/tapt_lamar/checkpoint-98000",
+        "max_length": 512,
+        "hidden_dim": 768,
+    },
+    "lamar_tapt_512_std": {
+        "weights_path": f"{_BASE}/LAMAR/src/pretrain/saving_model"
+                        "/tapt_512_standard_collator_1gpu/checkpoint-265000",
+        "max_length": 512,
+        "hidden_dim": 768,
+    },
+    "lamar_random": {
+        "weights_path": None,
+        "max_length": 1024,
+        "hidden_dim": 768,
+    },
 }
 
-_OUTPUT_DIR = f"{_BASE}/LAMAR/evalEmbeddings/results/LAMAR_CNN"
+_OUTPUT_DIR = f"{_BASE}/LAMAR/evalEmbeddings/results/cnn_all_variants"
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def parse_args():
-    p = argparse.ArgumentParser(description="LAMAR variants – layer search + CNN")
+    p = argparse.ArgumentParser(description="LAMAR variants – per-RBP layer search + CNN")
     p.add_argument("--data_roots",       nargs="+", default=_DATA_ROOTS)
     p.add_argument("--output_dir",       default=_OUTPUT_DIR)
     p.add_argument("--tokenizer_path",   default=_TOKENIZER_PATH)
-    p.add_argument("--model_max_length", type=int, default=512)
-    p.add_argument("--embed_batch_size", type=int, default=32)
+    p.add_argument("--embed_batch_size", type=int, default=8)
     p.add_argument("--downstream_batch", type=int, default=256)
     p.add_argument("--n_repeats",        type=int, default=5)
     p.add_argument("--max_epochs",       type=int, default=100)
+    p.add_argument("--layer_search_folds", type=int, default=5)
+    p.add_argument("--layer_search_probe_samples", type=int, default=512)
+    p.add_argument("--layer_search_probe_epochs", type=int, default=5)
+    p.add_argument("--layer_search_probe_batch", type=int, default=32)
     p.add_argument("--seed",             type=int, default=42)
     p.add_argument(
         "--variants",
         nargs="+",
         default=list(_MODEL_VARIANTS.keys()),
         choices=list(_MODEL_VARIANTS.keys()),
-        help="Which model variants to run (default: all four).",
+        help="Which model variants to run.",
     )
     p.add_argument(
         "--best_layer",
         type=int,
         default=None,
         help="Skip layer search and force this layer index for all variants.",
-    )
-    p.add_argument(
-        "--pilot_rbp",
-        type=str,
-        default=None,
-        help="RBP name to use as layer-search pilot (default: first alphabetically).",
-    )
-    p.add_argument(
-        "--max_pilot_samples",
-        type=int,
-        default=4000,
-        help="Cap pilot samples used for layer search.",
     )
     return p.parse_args()
 
@@ -152,7 +230,7 @@ def load_splits(rbp_dir: str):
         label_col = _find_col(list(df.columns), ["label", "labels", "target", "y"])
         splits[split] = (
             df[seq_col].astype(str).tolist(),
-            df[label_col].to_numpy(dtype=np.int64),
+            df[label_col].to_numpy(dtype="int64"),
         )
     return splits
 
@@ -191,7 +269,7 @@ def completed_pairs(results_csv):
 
 
 # ── LAMAR model loading ───────────────────────────────────────────────────────
-def _build_lamar_config(tokenizer) -> AutoConfig:
+def _build_lamar_config(tokenizer):
     return AutoConfig.for_model(
         "esm",
         vocab_size=len(tokenizer),
@@ -234,7 +312,21 @@ def _load_weights_from(weights_path: str) -> dict:
     return load_file(str(p))
 
 
-def build_lamar_model(tokenizer, weights_path, is_random: bool) -> EsmForMaskedLM:
+def _wolf_init(module: torch.nn.Module) -> None:
+    if isinstance(module, torch.nn.Linear):
+        torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.bias is not None:
+            torch.nn.init.zeros_(module.bias)
+    elif isinstance(module, torch.nn.Embedding):
+        torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.padding_idx is not None:
+            module.weight.data[module.padding_idx].zero_()
+    elif isinstance(module, torch.nn.LayerNorm):
+        torch.nn.init.ones_(module.weight)
+        torch.nn.init.zeros_(module.bias)
+
+
+def build_lamar_model(tokenizer, weights_path, is_random: bool, seed: int) -> EsmForMaskedLM:
     """Build, load weights, and return a ready-to-eval LAMAR model."""
     config = _build_lamar_config(tokenizer)
     model  = EsmForMaskedLM(config)
@@ -247,7 +339,10 @@ def build_lamar_model(tokenizer, weights_path, is_random: bool) -> EsmForMaskedL
         if non_trivial_missing:
             print(f"  [WARN] Missing (non-lm_head) keys: {non_trivial_missing[:5]}")
     else:
-        print("  [INFO] Random initialisation – no weights loaded")
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        model.apply(_wolf_init)
+        print(f"  [INFO] Random initialisation (Wolf), seed={seed}")
 
     model.to(device)
     model.eval()
@@ -274,85 +369,203 @@ def mean_pool(hidden, attention_mask, input_ids, special_ids):
 
 
 # ── layer search ──────────────────────────────────────────────────────────────
-def _probe_layer(X, y, n_splits=5, seed=42):
-    from sklearn.linear_model import LogisticRegression
+def _subsample_layer_search_data(seqs, labels, max_samples, seed):
+    if max_samples is None or max_samples <= 0 or len(seqs) <= max_samples:
+        return seqs, labels
+
+    from sklearn.model_selection import StratifiedShuffleSplit
+
+    splitter = StratifiedShuffleSplit(n_splits=1, train_size=max_samples, random_state=seed)
+    selected_idx, _ = next(splitter.split(np.zeros(len(labels)), labels))
+    selected_idx = np.sort(selected_idx)
+    return [seqs[i] for i in selected_idx], labels[selected_idx]
+
+
+def _extract_all_layer_tokens(seqs, model, tokenizer, max_length, batch_size, variant_name):
+    layer_vecs: Optional[Dict[int, List[np.ndarray]]] = None
+
+    with torch.no_grad():
+        for start in tqdm(
+            range(0, len(seqs), batch_size),
+            desc=f"  layer-search {variant_name}",
+            unit="batch",
+        ):
+            batch = seqs[start : start + batch_size]
+            tokens = tokenizer(
+                batch,
+                return_tensors="pt",
+                padding="max_length",
+                truncation=True,
+                max_length=max_length,
+            )
+            tokens = {k: v.to(device) for k, v in tokens.items()}
+            all_hidden = _get_all_hidden(model, tokens)
+
+            if layer_vecs is None:
+                layer_vecs = {li: [] for li in range(len(all_hidden))}
+
+            for li, hidden in enumerate(all_hidden):
+                layer_vecs[li].append(hidden.detach().cpu().numpy().astype("float32"))
+
+    assert layer_vecs is not None
+    return {li: np.concatenate(chunks, axis=0) for li, chunks in layer_vecs.items()}
+
+
+def _build_probe_cnn(seq_len, hidden_dim):
+    class ProbeCNN(torch.nn.Module):
+        def __init__(self, in_channels):
+            super().__init__()
+            self.conv = torch.nn.Conv1d(in_channels=in_channels, out_channels=32, kernel_size=7, padding=3)
+            self.relu = torch.nn.ReLU()
+            self.fc = torch.nn.Linear(32, 1)
+
+        def forward(self, x):
+            x = x.transpose(1, 2)
+            x = self.relu(self.conv(x))
+            x = x.max(dim=2).values
+            return self.fc(x).squeeze(-1)
+
+    return ProbeCNN(hidden_dim)
+
+
+def _probe_layer(X, y, n_splits=5, seed=42, epochs=5, batch_size=32):
     from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import StratifiedKFold
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
 
-    skf    = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
     aurocs = []
+    rng = np.random.default_rng(seed)
+    X = X.astype("float32", copy=False)
+    y = y.astype("float32", copy=False)
+
     for tr, te in skf.split(X, y):
-        clf = make_pipeline(
-            StandardScaler(),
-            LogisticRegression(max_iter=5000, C=1.0, random_state=seed),
-        )
-        clf.fit(X[tr], y[tr])
-        aurocs.append(roc_auc_score(y[te], clf.predict_proba(X[te])[:, 1]))
+        probe = _build_probe_cnn(X.shape[1], X.shape[2]).to(device)
+        optimizer = torch.optim.Adam(probe.parameters(), lr=1e-3)
+        criterion = torch.nn.BCEWithLogitsLoss()
+
+        Xtr = torch.from_numpy(X[tr]).to(device)
+        ytr = torch.from_numpy(y[tr]).to(device)
+        Xte = torch.from_numpy(X[te]).to(device)
+        yte = y[te]
+
+        best_val_loss = float("inf")
+        best_state = None
+        stale_epochs = 0
+
+        for _epoch in range(epochs):
+            probe.train()
+            perm = rng.permutation(Xtr.size(0))
+            for start in range(0, Xtr.size(0), batch_size):
+                idx = perm[start:start + batch_size]
+                xb = Xtr[idx]
+                yb = ytr[idx]
+
+                optimizer.zero_grad(set_to_none=True)
+                logits = probe(xb)
+                loss = criterion(logits, yb)
+                loss.backward()
+                optimizer.step()
+
+            probe.eval()
+            with torch.no_grad():
+                val_logits = probe(Xte)
+                val_loss = float(criterion(val_logits, torch.from_numpy(yte).to(device)).item())
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = {k: v.detach().cpu().clone() for k, v in probe.state_dict().items()}
+                stale_epochs = 0
+            else:
+                stale_epochs += 1
+                if stale_epochs >= 2:
+                    break
+
+        if best_state is not None:
+            probe.load_state_dict(best_state)
+
+        probe.eval()
+        with torch.no_grad():
+            preds = torch.sigmoid(probe(Xte)).detach().cpu().numpy().ravel()
+        aurocs.append(float(roc_auc_score(yte, preds)))
+
+        del probe, optimizer, Xtr, ytr, Xte
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     return float(np.mean(aurocs))
 
 
-def run_layer_search(
-    seqs, labels, model, tokenizer, max_length, batch_size,
-    variant_name, cache_dir, seed, n_splits=5
+def run_layer_search_for_task(
+    seqs,
+    labels,
+    model,
+    tokenizer,
+    max_length,
+    batch_size,
+    variant_name,
+    task_id,
+    cache_dir,
+    seed,
+    n_splits=5,
+    probe_max_samples=512,
+    probe_epochs=5,
+    probe_batch_size=32,
 ):
     """
     Extract mean-pool embeddings for every layer on a pilot RBP, probe each one,
     return the index with the highest AUROC.  Results are cached.
     """
-    import json
-
     cache_dir = Path(cache_dir) / variant_name
     cache_dir.mkdir(parents=True, exist_ok=True)
-    special_ids = tokenizer.all_special_ids
-    result_json = cache_dir.parent / f"layer_search_{variant_name}.json"
+    result_json = cache_dir / f"{task_id.replace('/', '__')}.json"
 
-    # Load from JSON cache if available
     if result_json.exists():
         with open(result_json) as f:
             cached = json.load(f)
-        print(f"  [layer_search] Loaded cached result for {variant_name}: "
+        print(f"  [layer_search] Loaded cached result for {variant_name} / {task_id}: "
               f"best layer = {cached['best_layer']} (AUROC={cached['best_auroc']:.4f})")
         return cached["best_layer"]
 
-    print(f"  [layer_search] Extracting all layers for {variant_name} …")
+    print(f"  [layer_search] {variant_name} / {task_id}")
+    probe_seqs, probe_labels = _subsample_layer_search_data(
+        seqs=seqs,
+        labels=labels,
+        max_samples=probe_max_samples,
+        seed=seed,
+    )
+    if len(probe_seqs) != len(seqs):
+        print(f"    Using stratified probe subset: {len(probe_seqs)} / {len(seqs)} sequences")
 
-    # Discover layer count
-    with torch.no_grad():
-        dummy = tokenizer(seqs[:2], return_tensors="pt", padding=True,
-                          truncation=True, max_length=max_length)
-        dummy = {k: v.to(device) for k, v in dummy.items()}
-        n_layers = len(_get_all_hidden(model, dummy))
-    print(f"  [layer_search] {n_layers} hidden states "
-          f"(1 embedding + {n_layers - 1} transformer blocks)")
-
-    # Accumulate per-layer mean-pool vectors
-    layer_vecs = {i: [] for i in range(n_layers)}
-    with torch.no_grad():
-        for start in tqdm(range(0, len(seqs), batch_size),
-                          desc=f"  layer-search {variant_name}", unit="batch"):
-            batch  = seqs[start : start + batch_size]
-            tokens = tokenizer(batch, return_tensors="pt", padding=True,
-                               truncation=True, max_length=max_length)
-            tokens = {k: v.to(device) for k, v in tokens.items()}
-            for li, h in enumerate(_get_all_hidden(model, tokens)):
-                p = mean_pool(h, tokens["attention_mask"], tokens["input_ids"], special_ids)
-                layer_vecs[li].append(p.cpu().numpy().astype(np.float32))
-
-    layer_embs = {li: np.concatenate(vecs) for li, vecs in layer_vecs.items()}
+    layer_embs = _extract_all_layer_tokens(
+        seqs=probe_seqs,
+        model=model,
+        tokenizer=tokenizer,
+        max_length=max_length,
+        batch_size=batch_size,
+        variant_name=variant_name,
+    )
 
     # Probe each layer
     layer_aurocs = {}
     for li, X in sorted(layer_embs.items()):
-        if np.linalg.norm(X, axis=1).mean() < 1e-6:
+        if np.linalg.norm(X.reshape(X.shape[0], -1), axis=1).mean() < 1e-6:
             print(f"    Layer {li:2d}: SKIPPED (zero norm)")
             continue
-        auroc = _probe_layer(X, labels, n_splits=n_splits, seed=seed)
+        auroc = _probe_layer(
+            X,
+            probe_labels,
+            n_splits=n_splits,
+            seed=seed,
+            epochs=probe_epochs,
+            batch_size=probe_batch_size,
+        )
         layer_aurocs[li] = auroc
         print(f"    Layer {li:2d}: AUROC = {auroc:.4f}")
 
-    best_layer = max(layer_aurocs, key=layer_aurocs.get)
+    if not layer_aurocs:
+        raise RuntimeError(f"No valid layers found during layer search for {variant_name} / {task_id}")
+
+    best_layer = int(max(layer_aurocs, key=lambda li: layer_aurocs[li]))
     best_auroc = layer_aurocs[best_layer]
 
     with open(result_json, "w") as f:
@@ -360,20 +573,32 @@ def run_layer_search(
             "best_layer": best_layer,
             "best_auroc": best_auroc,
             "variant":    variant_name,
+            "task_id":     task_id,
             "layer_aurocs": {str(k): v for k, v in layer_aurocs.items()},
         }, f, indent=2)
 
-    print(f"  [layer_search] {variant_name}: best layer = {best_layer} "
+    print(f"  [layer_search] {variant_name} / {task_id}: best layer = {best_layer} "
           f"(AUROC={best_auroc:.4f})")
     return best_layer
 
 
 # ── embedding extraction ──────────────────────────────────────────────────────
 def extract_embeddings(seqs, model, tokenizer, max_length, batch_size,
-                       layer_idx, split_label=""):
-    """Return list of (seq_len, 768) numpy arrays, one per sequence."""
-    special_ids = tokenizer.all_special_ids
-    all_embs    = []
+                       layer_idx, save_path, split_label=""):
+    """
+    Extract per-token embeddings and write directly to a memmap .npy file.
+    Returns the memmap array (read-only) — never holds full data in RAM.
+    """
+    hidden_dim = int(getattr(model.config, "hidden_size", 768))
+    n_seqs = len(seqs)
+
+    emb_path = Path(save_path)
+    emb_path.parent.mkdir(parents=True, exist_ok=True)
+    mmap = np.lib.format.open_memmap(
+        str(emb_path), mode="w+",
+        dtype="float32", shape=(n_seqs, max_length, hidden_dim),
+    )
+
     with torch.no_grad():
         for start in tqdm(range(0, len(seqs), batch_size),
                           desc=f"  embed {split_label}", unit="batch"):
@@ -382,8 +607,37 @@ def extract_embeddings(seqs, model, tokenizer, max_length, batch_size,
                                truncation=True, max_length=max_length)
             tokens = {k: v.to(device) for k, v in tokens.items()}
             hidden = _get_all_hidden(model, tokens)[layer_idx]   # (B, seq_len, H)
-            all_embs.extend(hidden.cpu().numpy())
-    return all_embs
+            mmap[start:start + len(batch)] = hidden.detach().cpu().numpy().astype("float32")
+
+    mmap.flush()
+    return np.load(str(emb_path), mmap_mode="r")
+
+
+def make_dataset(emb_path, labels, batch_size, training, seed):
+    mmap = np.load(str(emb_path), mmap_mode="r")
+    y = labels.astype("int64")
+    n = len(y)
+    idx = np.arange(n, dtype="int64")
+    x_shape = tuple(int(dim) for dim in mmap.shape[1:])
+
+    ds = tf.data.Dataset.from_tensor_slices((idx, y))
+    if training:
+        ds = ds.shuffle(n, seed=seed, reshuffle_each_iteration=True)
+
+    ds = ds.batch(batch_size)
+
+    def _fetch_batch(batch_idx, batch_y):
+        def _np_fetch(i):
+            return mmap[i].astype("float32", copy=False)
+
+        batch_x = tf.numpy_function(_np_fetch, [batch_idx], tf.float32)
+        batch_x.set_shape((None,) + x_shape)
+        batch_y = tf.cast(batch_y, tf.int64)
+        return batch_x, batch_y
+
+    ds = ds.map(_fetch_batch, num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.prefetch(tf.data.AUTOTUNE)
+    return ds
 
 
 # ── CNN architecture ──────────────────────────────────────────────────────────
@@ -435,36 +689,17 @@ def main():
     # Load tokenizer once (shared across all variants)
     print(f"Loading tokenizer from: {args.tokenizer_path}")
     tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_path, model_max_length=args.model_max_length
+        args.tokenizer_path,
+        model_max_length=max(spec["max_length"] for spec in _MODEL_VARIANTS.values()),
     )
     print(f"  vocab={len(tokenizer)}, "
           f"pad={tokenizer.pad_token_id}, mask={tokenizer.mask_token_id}\n")
 
-    # Select pilot RBP for layer search
-    if args.pilot_rbp:
-        pilot_candidates = [t for t in tasks if t[1] == args.pilot_rbp]
-        pilot_task = pilot_candidates[0] if pilot_candidates else tasks[0]
-        if not pilot_candidates:
-            print(f"[WARN] --pilot_rbp '{args.pilot_rbp}' not found; using first task.")
-    else:
-        pilot_task = tasks[0]
-
-    _, pilot_rbp_name, _, pilot_dir = pilot_task
-    pilot_splits  = load_splits(pilot_dir)
-    pilot_seqs    = pilot_splits["train"][0] + pilot_splits["valid"][0]
-    pilot_labels  = np.concatenate([pilot_splits["train"][1], pilot_splits["valid"][1]])
-
-    if args.max_pilot_samples and len(pilot_seqs) > args.max_pilot_samples:
-        rng          = np.random.default_rng(args.seed)
-        idx          = rng.choice(len(pilot_seqs), args.max_pilot_samples, replace=False)
-        pilot_seqs   = [pilot_seqs[i] for i in idx]
-        pilot_labels = pilot_labels[idx]
-
-    print(f"Pilot RBP: '{pilot_rbp_name}'  ({len(pilot_seqs)} samples)\n")
-
     # ── iterate over model variants ───────────────────────────────────────────
     for variant_name in args.variants:
-        weights_path = _MODEL_VARIANTS[variant_name]
+        spec = _MODEL_VARIANTS[variant_name]
+        weights_path = spec["weights_path"]
+        max_length = spec["max_length"]
         is_random    = (weights_path is None)
 
         # Skip entire variant if all tasks are already done
@@ -477,6 +712,7 @@ def main():
             print(f"Weights : {weights_path}")
         else:
             print(f"Weights : (random initialisation)")
+        print(f"Max len : {max_length}")
         print(f"Tasks pending: {len(pending)} / {len(tasks)}")
         print(f"{'='*70}")
 
@@ -484,63 +720,116 @@ def main():
             print("  All tasks already done for this variant – skipping.")
             continue
 
-        # Load model for this variant
+        print(f"\n[Phase 1] Extracting embeddings for {variant_name}")
         print(f"\n  Loading LAMAR model ({variant_name}) …")
-        model = build_lamar_model(tokenizer, weights_path, is_random)
+        model = build_lamar_model(tokenizer, weights_path, is_random, seed=args.seed)
+        task_best_layers: Dict[str, int] = {}
 
-        # ── layer search ──────────────────────────────────────────────────────
-        if args.best_layer is not None:
-            best_layer = args.best_layer
-            print(f"  [INFO] Forced best_layer={best_layer} (--best_layer flag)")
-        else:
-            best_layer = run_layer_search(
-                seqs        = pilot_seqs,
-                labels      = pilot_labels,
-                model       = model,
-                tokenizer   = tokenizer,
-                max_length  = args.model_max_length,
-                batch_size  = args.embed_batch_size,
-                variant_name = variant_name,
-                cache_dir   = ls_cache_dir,
-                seed        = args.seed,
-            )
-
-        print(f"\n  Best layer for {variant_name}: {best_layer}\n")
-
-        # ── CNN training per RBP ──────────────────────────────────────────────
-        records = []
-
+        # ── Phase 1: layer search + embedding extraction ─────────────────────
         for task_id, rbp_name, source_tag, rbp_dir in pending:
-            print(f"\n  --- {task_id}  [layer {best_layer}] ---")
+            print(f"\n  --- {task_id} ---")
 
             splits = load_splits(rbp_dir)
             if splits is None:
                 print("    [SKIP] missing CSV files")
                 continue
 
-            # Extract per-token embeddings
-            dataset_tf = {}
-            emb_shape  = None
+            if args.best_layer is not None:
+                best_layer = args.best_layer
+                print(f"    [layer_search] forced layer {best_layer}")
+            else:
+                layer_search_seqs = splits["train"][0] + splits["valid"][0]
+                layer_search_labels = np.concatenate([
+                    splits["train"][1],
+                    splits["valid"][1],
+                ])
+                best_layer = run_layer_search_for_task(
+                    seqs=layer_search_seqs,
+                    labels=layer_search_labels,
+                    model=model,
+                    tokenizer=tokenizer,
+                    max_length=max_length,
+                    batch_size=args.embed_batch_size,
+                    variant_name=variant_name,
+                    task_id=task_id,
+                    cache_dir=ls_cache_dir,
+                    seed=args.seed,
+                    n_splits=args.layer_search_folds,
+                    probe_max_samples=args.layer_search_probe_samples,
+                    probe_epochs=args.layer_search_probe_epochs,
+                    probe_batch_size=args.layer_search_probe_batch,
+                )
+            print(f"    Best layer: {best_layer}")
+            task_best_layers[task_id] = best_layer
+
+            emb_dir = cache_dir / variant_name / task_id.replace("/", "__")
+            emb_dir.mkdir(parents=True, exist_ok=True)
 
             for split_name in ("train", "valid", "test"):
-                seqs, labels = splits[split_name]
-                embs = extract_embeddings(
-                    seqs, model, tokenizer,
-                    max_length  = args.model_max_length,
-                    batch_size  = args.embed_batch_size,
-                    layer_idx   = best_layer,
-                    split_label = f"{variant_name}/{split_name}",
-                )
-                if emb_shape is None:
-                    emb_shape = embs[0].shape
-                with tf.device("CPU"):
-                    dataset_tf[split_name] = (
-                        tf.data.Dataset.from_tensor_slices((embs, labels))
-                        .shuffle(args.downstream_batch * 4)
-                        .batch(args.downstream_batch)
+                seqs, _ = splits[split_name]
+                emb_path = emb_dir / f"{split_name}.npy"
+
+                if emb_path.exists():
+                    print(f"    {split_name:>5}: {len(seqs)} sequences (cached)")
+                else:
+                    print(f"    {split_name:>5}: {len(seqs)} sequences")
+                    extract_embeddings(
+                        seqs=seqs,
+                        model=model,
+                        tokenizer=tokenizer,
+                        max_length=max_length,
+                        batch_size=args.embed_batch_size,
+                        layer_idx=best_layer,
+                        save_path=emb_path,
+                        split_label=f"{variant_name}/{rbp_name}/{split_name}",
                     )
 
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
+        print(f"\n[Phase 1] Done for {variant_name}. PyTorch model released.")
+        print(f"\n[Phase 2] Training CNNs for {variant_name}")
+
+        hidden_dim = int(spec["hidden_dim"])
+        emb_shape = (max_length, hidden_dim)
+
+        for task_id, rbp_name, source_tag, rbp_dir in pending:
+            print(f"\n  --- {task_id} ---")
+
+            splits = load_splits(rbp_dir)
+            if splits is None:
+                print("    [SKIP] missing CSV files")
+                continue
+
+            emb_dir = cache_dir / variant_name / task_id.replace("/", "__")
+            if not emb_dir.exists():
+                print(f"    [SKIP] missing embedding cache: {emb_dir}")
+                continue
+
+            best_layer = task_best_layers.get(task_id)
+            if best_layer is None:
+                print(f"    [SKIP] missing cached best layer for {task_id}")
+                continue
+
+            print(f"    Best layer: {best_layer}")
             print(f"    Embedding shape: {emb_shape}")
+
+            dataset_tf = {}
+            for split_name in ("train", "valid", "test"):
+                _, labels = splits[split_name]
+                emb_path = emb_dir / f"{split_name}.npy"
+                if not emb_path.exists():
+                    raise FileNotFoundError(f"Missing cached embeddings: {emb_path}")
+
+                dataset_tf[split_name] = make_dataset(
+                    emb_path=emb_path,
+                    labels=labels,
+                    batch_size=args.downstream_batch,
+                    training=(split_name == "train"),
+                    seed=args.seed,
+                )
 
             # Train CNN (n_repeats)
             acc_list, auroc_list, aupr_list = [], [], []
@@ -555,6 +844,8 @@ def main():
                         tf.keras.metrics.AUC(curve="PR",  name="aupr"),
                     ],
                     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3),
+                    jit_compile=False,
+                    run_eagerly=True,
                 )
                 cnn.fit(
                     dataset_tf["train"],
@@ -571,7 +862,8 @@ def main():
                     ],
                 )
 
-                _, acc, roc, pr = cnn.evaluate(dataset_tf["test"], verbose=0)
+                metrics = np.atleast_1d(cnn.evaluate(dataset_tf["test"], verbose=0)).tolist()
+                _, acc, roc, pr = metrics
                 acc_list.append(acc)
                 auroc_list.append(roc)
                 aupr_list.append(pr)
@@ -579,12 +871,18 @@ def main():
                       f"acc={acc:.4f}  auroc={roc:.4f}  aupr={pr:.4f}")
                 tf.keras.backend.clear_session()
 
-            rec = {
+            rec: Dict[str, Any] = {
                 "model_variant": variant_name,
                 "task_id":       task_id,
                 "rbp":           rbp_name,
                 "source":        source_tag,
                 "best_layer":    best_layer,
+                "max_length":    max_length,
+                "embed_batch_size": args.embed_batch_size,
+                "downstream_batch": args.downstream_batch,
+                "n_repeats":       args.n_repeats,
+                "max_epochs":      args.max_epochs,
+                "seed":            args.seed,
                 "acc_mean":      float(np.mean(acc_list)),
                 "acc_std":       float(np.std(acc_list)),
                 "auroc_mean":    float(np.mean(auroc_list)),
@@ -592,27 +890,28 @@ def main():
                 "aupr_mean":     float(np.mean(aupr_list)),
                 "aupr_std":      float(np.std(aupr_list)),
             }
-            records.append(rec)
             print(f"    → AUROC {rec['auroc_mean']:.4f}±{rec['auroc_std']:.4f}  "
                   f"AUPR {rec['aupr_mean']:.4f}±{rec['aupr_std']:.4f}")
 
             # Incremental save after each RBP
-            existing = []
+            existing: List[Dict[Any, Any]] = []
             if os.path.exists(results_csv):
                 try:
                     existing = pd.read_csv(results_csv).to_dict("records")
                 except Exception:
-                    pass
-            pd.DataFrame(existing + records).to_csv(results_csv, index=False)
+                    existing = []
+            pd.DataFrame(existing + [rec]).to_csv(results_csv, index=False)
 
-        # Free GPU memory before loading next variant
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            dataset_tf.clear()
+            if emb_dir.exists():
+                shutil.rmtree(emb_dir)
+                print(f"    [cleanup] removed {emb_dir}")
+            gc.collect()
+            tf.keras.backend.clear_session()
 
     # ── final summary ─────────────────────────────────────────────────────────
     if os.path.exists(results_csv):
-        df = pd.read_csv(results_csv)
+        df = pd.read_csv(results_csv).drop_duplicates(subset=["model_variant", "task_id"], keep="last")
         print("\n" + "=" * 70)
         print("FINAL SUMMARY (mean AUROC per model variant)")
         print("=" * 70)

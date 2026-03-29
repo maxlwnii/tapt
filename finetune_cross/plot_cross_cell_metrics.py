@@ -25,6 +25,7 @@ import pandas as pd
 METRICS = [
     ("eval_auc", "AUC"),
     ("eval_auprc", "AUPRC"),
+    ("eval_matthews_correlation", "Matthews"),
     ("eval_accuracy", "Accuracy"),
 ]
 

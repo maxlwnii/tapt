@@ -7,6 +7,7 @@ Evaluated variants
   dnabert2_tapt        – dnabert2_standard_mlm/checkpoint-25652
   dnabert2_tapt_v3     – dnabert2_tapt_v3/checkpoint-2566
   dnabert2_random      – randomly initialised DNABERT-2 baseline
+    one_hot              – fixed one-hot nucleotide embedding baseline
 
 Protocol per (model_variant, RBP)
 ---------------------------------
@@ -139,6 +140,24 @@ _MODEL_VARIANTS = {
         "max_length": 512,
         "hidden_dim": 768,
     },
+    "dnabert2_tapt_v4_5132": {
+        "weights_path": f"{_DB2_BASE}/pretrain/models/dnabert2_tapt_v4/checkpoint-5132",
+        "tokenizer": "zhihan1996/DNABERT-2-117M",
+        "max_length": 512,
+        "hidden_dim": 768,
+    },
+    "dnabert2_tapt_v4_28226": {
+        "weights_path": f"{_DB2_BASE}/pretrain/models/dnabert2_tapt_v4/checkpoint-28226",
+        "tokenizer": "zhihan1996/DNABERT-2-117M",
+        "max_length": 512,
+        "hidden_dim": 768,
+    },
+    "one_hot": {
+        "weights_path": "__one_hot__",
+        "tokenizer": None,
+        "max_length": 512,
+        "hidden_dim": 4,
+    },
 }
 
 _OUTPUT_DIR = f"{_BASE}/DNABERT2/evalEmbeddings/results/cnn_all_variants"
@@ -170,6 +189,11 @@ def parse_args():
         type=int,
         default=None,
         help="Skip per-RBP layer search and force this layer index for all variants/tasks.",
+    )
+    p.add_argument(
+        "--keep_embeddings",
+        action="store_true",
+        help="Keep per-task embedding caches after each task (default deletes them).",
     )
     return p.parse_args()
 
@@ -412,6 +436,25 @@ def _subsample_layer_search_data(seqs, labels, max_samples, seed):
     return [seqs[i] for i in selected_idx], labels[selected_idx]
 
 
+def _call_with_embedding_plus_layers(model, enc: Dict[str, torch.Tensor]) -> List[torch.Tensor]:
+    """
+    Return hidden states with LAMAR-compatible indexing:
+      index 0   -> embedding layer output
+      index 1+  -> transformer block outputs from _call_with_all_layers
+
+    _call_with_all_layers() returns only encoder block outputs for DNABERT-2.
+    """
+    embed_kwargs = {
+        "input_ids": enc["input_ids"],
+    }
+    if "token_type_ids" in enc:
+        embed_kwargs["token_type_ids"] = enc["token_type_ids"]
+
+    embedding_out = model.embeddings(**embed_kwargs)
+    block_hiddens = _call_with_all_layers(model, dict(enc))
+    return [embedding_out] + block_hiddens
+
+
 def _extract_all_layer_tokens(seqs, model, tokenizer, model_max_length, embed_batch_size):
     layer_vecs: Optional[Dict[int, List[np.ndarray]]] = None
 
@@ -426,7 +469,7 @@ def _extract_all_layer_tokens(seqs, model, tokenizer, model_max_length, embed_ba
                 max_length=model_max_length,
             )
             enc = {k: v.to(device) for k, v in enc.items()}
-            all_hidden = _call_with_all_layers(model, dict(enc))
+            all_hidden = _call_with_embedding_plus_layers(model, dict(enc))
 
             if layer_vecs is None:
                 layer_vecs = {li: [] for li in range(len(all_hidden))}
@@ -638,11 +681,55 @@ def extract_embeddings(seqs, model, tokenizer, model_max_length,
                 max_length=model_max_length,
             )
             enc = {k: v.to(device) for k, v in enc.items()}
-            hidden = _call_with_all_layers(model, dict(enc))[layer_idx]
+            hidden = _call_with_embedding_plus_layers(model, dict(enc))[layer_idx]
             mmap[i:i + len(batch)] = hidden.detach().cpu().numpy().astype("float32")
 
     mmap.flush()
     # Re-open read-only so OS can page it in on demand
+    return np.load(str(emb_path), mmap_mode="r")
+
+
+_ONE_HOT_BASE_TO_INDEX = {
+    "A": 0,
+    "C": 1,
+    "G": 2,
+    "T": 3,
+    "U": 3,
+}
+
+
+def extract_one_hot_embeddings(seqs, model_max_length, embed_batch_size, save_path, split_label=""):
+    """
+    Extract one-hot nucleotide embeddings and write directly to a memmap .npy file.
+    Unknown/ambiguous bases are mapped to all-zero vectors.
+    """
+    hidden_dim = 4
+    n_seqs = len(seqs)
+
+    emb_path = Path(save_path)
+    emb_path.parent.mkdir(parents=True, exist_ok=True)
+    mmap = np.lib.format.open_memmap(
+        str(emb_path), mode="w+",
+        dtype="float32", shape=(n_seqs, model_max_length, hidden_dim),
+    )
+
+    for i in tqdm(
+        range(0, n_seqs, embed_batch_size),
+        desc=f"  embed {split_label}",
+        unit="batch",
+    ):
+        batch = seqs[i:i + embed_batch_size]
+        batch_arr = np.zeros((len(batch), model_max_length, hidden_dim), dtype="float32")
+        for b_idx, seq in enumerate(batch):
+            s = seq.upper()
+            upto = min(len(s), model_max_length)
+            for pos in range(upto):
+                base_idx = _ONE_HOT_BASE_TO_INDEX.get(s[pos])
+                if base_idx is not None:
+                    batch_arr[b_idx, pos, base_idx] = 1.0
+        mmap[i:i + len(batch)] = batch_arr
+
+    mmap.flush()
     return np.load(str(emb_path), mmap_mode="r")
 
 
@@ -749,202 +836,211 @@ def main():
         if not pending:
             print("Nothing to do for this variant.")
             continue
-
-        print(f"\n[Phase 1] Extracting embeddings for {variant_name}")
-        model, tokenizer = load_dnabert2_variant(spec, seed=args.seed)
-        task_best_layers: Dict[str, int] = {}
-
-        for task_id, rbp_name, source_tag, rbp_dir in pending:
-            print(f"\n--- {variant_name} | {task_id} ---")
-
-            splits = load_splits(rbp_dir)
-            if splits is None:
-                print("  [SKIP] missing CSV files")
-                continue
-
-            if args.best_layer is not None:
-                best_layer = args.best_layer
-                print(f"  [layer_search] forced layer {best_layer}")
-            else:
-                layer_search_seqs = splits["train"][0] + splits["valid"][0]
-                layer_search_labels = np.concatenate([splits["train"][1], splits["valid"][1]])
-                best_layer = run_layer_search_for_task(
-                    seqs=layer_search_seqs,
-                    labels=layer_search_labels,
-                    model=model,
-                    tokenizer=tokenizer,
-                    variant_name=variant_name,
-                    task_id=task_id,
-                    model_max_length=spec["max_length"],
-                    embed_batch_size=args.embed_batch_size,
-                    cache_dir=layer_search_dir,
-                    num_folds=args.layer_search_folds,
-                    seed=args.seed,
-                    probe_max_samples=args.layer_search_probe_samples,
-                    probe_epochs=args.layer_search_probe_epochs,
-                    probe_batch_size=args.layer_search_probe_batch,
-                )
-
-            print(f"  Best layer : {best_layer}")
-            task_best_layers[task_id] = best_layer
-
-            emb_dir = cache_dir / variant_name / task_id.replace("/", "__")
-            emb_dir.mkdir(parents=True, exist_ok=True)
-
-            for split_name in ("train", "valid", "test"):
-                seqs, _ = splits[split_name]
-                emb_path = emb_dir / f"{split_name}.npy"
-
-                if emb_path.exists():
-                    print(f"  {split_name:>5}: {len(seqs)} sequences (cached)")
-                else:
-                    print(f"  {split_name:>5}: {len(seqs)} sequences")
-                    extract_embeddings(
-                        seqs=seqs,
-                        model=model,
-                        tokenizer=tokenizer,
-                        model_max_length=spec["max_length"],
-                        embed_batch_size=args.embed_batch_size,
-                        layer_idx=best_layer,
-                        save_path=emb_path,
-                        split_label=f"{variant_name}/{rbp_name}/{split_name}",
-                    )
-
-        del model, tokenizer
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        print(f"\n[Phase 1] Done for {variant_name}. PyTorch model released.")
-        print(f"\n[Phase 2] Training CNNs for {variant_name}")
+        model = None
+        tokenizer = None
+        if spec["weights_path"] != "__one_hot__":
+            print(f"\nLoading DNABERT-2 model for variant {variant_name} ...")
+            model, tokenizer = load_dnabert2_variant(spec, seed=args.seed)
 
         hidden_dim = int(spec["hidden_dim"])
         emb_shape = (spec["max_length"], hidden_dim)
 
         for task_id, rbp_name, source_tag, rbp_dir in pending:
             print(f"\n--- {variant_name} | {task_id} ---")
-
             splits = load_splits(rbp_dir)
             if splits is None:
                 print("  [SKIP] missing CSV files")
                 continue
 
             emb_dir = cache_dir / variant_name / task_id.replace("/", "__")
-            if not emb_dir.exists():
-                print(f"  [SKIP] missing embedding cache: {emb_dir}")
-                continue
-
-            best_layer = task_best_layers.get(task_id)
-            if best_layer is None:
-                print(f"  [SKIP] missing cached best layer for {task_id}")
-                continue
-
-            print(f"  Best layer : {best_layer}")
-            print(f"  Embedding shape : {emb_shape}")
-
+            emb_dir.mkdir(parents=True, exist_ok=True)
             dataset_tf = {}
-            for split_name in ("train", "valid", "test"):
-                _, labels = splits[split_name]
-                emb_path = emb_dir / f"{split_name}.npy"
-                if not emb_path.exists():
-                    raise FileNotFoundError(f"Missing cached embeddings: {emb_path}")
+            task_succeeded = False
 
-                dataset_tf[split_name] = make_dataset(
-                    emb_path=emb_path,
-                    labels=labels,
-                    batch_size=args.downstream_batch,
-                    training=(split_name == "train"),
-                    seed=args.seed,
-                )
-
-            # Force one eager fetch to fail-fast on any tf.data / mmap issue.
             try:
-                warmup_x, warmup_y = next(iter(dataset_tf["train"]))
-                print(f"  train batch warmup: X={tuple(warmup_x.shape)}, y={tuple(warmup_y.shape)}")
-            except Exception as exc:
-                raise RuntimeError(f"Failed to fetch first training batch for {variant_name}/{task_id}") from exc
+                if spec["weights_path"] == "__one_hot__":
+                    best_layer = -1
+                    print("  Best layer : -1 (one_hot baseline, no layer search)")
+                elif args.best_layer is not None:
+                    best_layer = int(args.best_layer)
+                    print(f"  [layer_search] forced layer {best_layer}")
+                else:
+                    layer_search_seqs = splits["train"][0] + splits["valid"][0]
+                    layer_search_labels = np.concatenate([splits["train"][1], splits["valid"][1]])
+                    best_layer = run_layer_search_for_task(
+                        seqs=layer_search_seqs,
+                        labels=layer_search_labels,
+                        model=model,
+                        tokenizer=tokenizer,
+                        variant_name=variant_name,
+                        task_id=task_id,
+                        model_max_length=spec["max_length"],
+                        embed_batch_size=args.embed_batch_size,
+                        cache_dir=layer_search_dir,
+                        num_folds=args.layer_search_folds,
+                        seed=args.seed,
+                        probe_max_samples=args.layer_search_probe_samples,
+                        probe_epochs=args.layer_search_probe_epochs,
+                        probe_batch_size=args.layer_search_probe_batch,
+                    )
 
-            acc_list, auroc_list, aupr_list = [], [], []
-            for rep in range(args.n_repeats):
-                auroc_metric = tf.keras.metrics.AUC(curve="ROC", name="auroc")
-                aupr_metric = tf.keras.metrics.AUC(curve="PR", name="aupr")
+                print(f"  Best layer : {best_layer}")
 
-                cnn = chip_cnn(emb_shape, 1)
-                cnn.compile(
-                    loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
-                    metrics=["accuracy", auroc_metric, aupr_metric],
-                    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-                    jit_compile=False,
-                    run_eagerly=True,
-                )
-                print(
-                    f"  [train] {variant_name} | {task_id} | "
-                    f"repeat {rep + 1}/{args.n_repeats} | starting fit"
-                )
-                cnn.fit(
-                    dataset_tf["train"],
-                    validation_data=dataset_tf["valid"],
-                    epochs=args.max_epochs,
-                    verbose=0,
-                    callbacks=[
-                        tf.keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True),
-                        tf.keras.callbacks.ReduceLROnPlateau(
-                            monitor="val_loss", factor=0.2, patience=5, min_lr=1e-6
-                        ),
-                    ],
-                )
+                # Task-local extract -> train -> cleanup keeps disk usage bounded.
+                for split_name in ("train", "valid", "test"):
+                    seqs, _ = splits[split_name]
+                    emb_path = emb_dir / f"{split_name}.npy"
+                    if emb_path.exists():
+                        print(f"  {split_name:>5}: {len(seqs)} sequences (cached)")
+                        continue
 
-                metrics = np.atleast_1d(cnn.evaluate(dataset_tf["test"], verbose=0)).tolist()
-                _, acc, roc, pr = metrics
-                acc_list.append(acc)
-                auroc_list.append(roc)
-                aupr_list.append(pr)
-                print(
-                    f"    rep {rep + 1}/{args.n_repeats}: "
-                    f"acc={acc:.4f}  auroc={roc:.4f}  aupr={pr:.4f}"
-                )
-                tf.keras.backend.clear_session()
+                    print(f"  {split_name:>5}: {len(seqs)} sequences")
+                    if spec["weights_path"] == "__one_hot__":
+                        extract_one_hot_embeddings(
+                            seqs=seqs,
+                            model_max_length=spec["max_length"],
+                            embed_batch_size=args.embed_batch_size,
+                            save_path=emb_path,
+                            split_label=f"{variant_name}/{rbp_name}/{split_name}",
+                        )
+                    else:
+                        extract_embeddings(
+                            seqs=seqs,
+                            model=model,
+                            tokenizer=tokenizer,
+                            model_max_length=spec["max_length"],
+                            embed_batch_size=args.embed_batch_size,
+                            layer_idx=best_layer,
+                            save_path=emb_path,
+                            split_label=f"{variant_name}/{rbp_name}/{split_name}",
+                        )
 
-            rec: Dict[str, Any] = {
-                "model_variant": variant_name,
-                "task_id": task_id,
-                "rbp": rbp_name,
-                "source": source_tag,
-                "best_layer": best_layer,
-                "max_length": spec["max_length"],
-                "embed_batch_size": args.embed_batch_size,
-                "downstream_batch": args.downstream_batch,
-                "n_repeats": args.n_repeats,
-                "max_epochs": args.max_epochs,
-                "seed": args.seed,
-                "acc_mean": float(np.mean(acc_list)),
-                "acc_std": float(np.std(acc_list)),
-                "auroc_mean": float(np.mean(auroc_list)),
-                "auroc_std": float(np.std(auroc_list)),
-                "aupr_mean": float(np.mean(aupr_list)),
-                "aupr_std": float(np.std(aupr_list)),
-            }
+                print(f"  Embedding shape : {emb_shape}")
 
-            existing: List[Dict[Any, Any]] = []
-            if results_csv.exists():
+                for split_name in ("train", "valid", "test"):
+                    _, labels = splits[split_name]
+                    emb_path = emb_dir / f"{split_name}.npy"
+                    if not emb_path.exists():
+                        raise FileNotFoundError(f"Missing cached embeddings: {emb_path}")
+                    dataset_tf[split_name] = make_dataset(
+                        emb_path=emb_path,
+                        labels=labels,
+                        batch_size=args.downstream_batch,
+                        training=(split_name == "train"),
+                        seed=args.seed,
+                    )
+
+                # Fail fast on tf.data / mmap issues.
                 try:
-                    existing = pd.read_csv(results_csv).to_dict("records")
-                except Exception:
-                    existing = []
-            pd.DataFrame(existing + [rec]).to_csv(results_csv, index=False)
+                    warmup_x, warmup_y = next(iter(dataset_tf["train"]))
+                    print(f"  train batch warmup: X={tuple(warmup_x.shape)}, y={tuple(warmup_y.shape)}")
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to fetch first training batch for {variant_name}/{task_id}"
+                    ) from exc
 
-            print(
-                f"  → AUROC {rec['auroc_mean']:.4f}±{rec['auroc_std']:.4f}  "
-                f"AUPR {rec['aupr_mean']:.4f}±{rec['aupr_std']:.4f}"
-            )
-            print(f"  Results saved → {results_csv}")
+                acc_list, auroc_list, aupr_list = [], [], []
+                for rep in range(args.n_repeats):
+                    print(
+                        f"  [train] {variant_name} | {task_id} | "
+                        f"repeat {rep + 1}/{args.n_repeats} | building CNN..."
+                    )
+                    sys.stdout.flush()
 
-            dataset_tf.clear()
-            if emb_dir.exists():
-                shutil.rmtree(emb_dir)
-                print(f"  [cleanup] removed {emb_dir}")
+                    cnn = chip_cnn(emb_shape, 1)
+                    cnn.compile(
+                        loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
+                        metrics=["accuracy", 
+                                 tf.keras.metrics.AUC(curve="ROC", name="auroc"),
+                                 tf.keras.metrics.AUC(curve="PR", name="aupr")],
+                        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+                        jit_compile=False,
+                        run_eagerly=False,
+                    )
+                    print(
+                        f"  [train] {variant_name} | {task_id} | "
+                        f"repeat {rep + 1}/{args.n_repeats} | starting fit with {args.max_epochs} epochs"
+                    )
+                    sys.stdout.flush()
+
+                    cnn.fit(
+                        dataset_tf["train"],
+                        validation_data=dataset_tf["valid"],
+                        epochs=args.max_epochs,
+                        verbose=1,
+                        callbacks=[
+                            tf.keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True),
+                            tf.keras.callbacks.ReduceLROnPlateau(
+                                monitor="val_loss", factor=0.2, patience=5, min_lr=1e-6
+                            ),
+                        ],
+                    )
+
+                    print(f"    rep {rep + 1}/{args.n_repeats}: evaluating on test...")
+                    sys.stdout.flush()
+                    metrics = np.atleast_1d(cnn.evaluate(dataset_tf["test"], verbose=0)).tolist()
+                    _, acc, roc, pr = metrics
+                    acc_list.append(acc)
+                    auroc_list.append(roc)
+                    aupr_list.append(pr)
+                    print(
+                        f"    rep {rep + 1}/{args.n_repeats}: "
+                        f"acc={acc:.4f}  auroc={roc:.4f}  aupr={pr:.4f}"
+                    )
+                    tf.keras.backend.clear_session()
+
+                rec: Dict[str, Any] = {
+                    "model_variant": variant_name,
+                    "task_id": task_id,
+                    "rbp": rbp_name,
+                    "source": source_tag,
+                    "best_layer": best_layer,
+                    "max_length": spec["max_length"],
+                    "embed_batch_size": args.embed_batch_size,
+                    "downstream_batch": args.downstream_batch,
+                    "n_repeats": args.n_repeats,
+                    "max_epochs": args.max_epochs,
+                    "seed": args.seed,
+                    "acc_mean": float(np.mean(acc_list)),
+                    "acc_std": float(np.std(acc_list)),
+                    "auroc_mean": float(np.mean(auroc_list)),
+                    "auroc_std": float(np.std(auroc_list)),
+                    "aupr_mean": float(np.mean(aupr_list)),
+                    "aupr_std": float(np.std(aupr_list)),
+                }
+
+                existing: List[Dict[Any, Any]] = []
+                if results_csv.exists():
+                    try:
+                        existing = pd.read_csv(results_csv).to_dict("records")
+                    except Exception:
+                        existing = []
+                pd.DataFrame(existing + [rec]).to_csv(results_csv, index=False)
+
+                print(
+                    f"  → AUROC {rec['auroc_mean']:.4f}±{rec['auroc_std']:.4f}  "
+                    f"AUPR {rec['aupr_mean']:.4f}±{rec['aupr_std']:.4f}"
+                )
+                print(f"  Results saved → {results_csv}")
+                done.add((variant_name, task_id))
+                task_succeeded = True
+            finally:
+                dataset_tf.clear()
+                gc.collect()
+                tf.keras.backend.clear_session()
+                if task_succeeded and (not args.keep_embeddings) and emb_dir.exists():
+                    shutil.rmtree(emb_dir)
+                    print(f"  [cleanup] removed {emb_dir}")
+                elif (not task_succeeded) and emb_dir.exists():
+                    print(f"  [cleanup] keeping cache after failure: {emb_dir}")
+
+        if model is not None:
+            del model, tokenizer
             gc.collect()
-            tf.keras.backend.clear_session()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        print(f"\n[done] Finished variant {variant_name}.")
 
     if results_csv.exists():
         df = pd.read_csv(results_csv).drop_duplicates(subset=["model_variant", "task_id"], keep="last")

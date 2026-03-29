@@ -179,6 +179,27 @@ _MODEL_DEFAULTS = {
         "tokenizer":    "zhihan1996/DNABERT-2-117M",
         "max_length":   512,
     },
+    "dnabert2_tapt_v4_5132": {
+        "type":         "dnabert2",
+        "weights_path": (f"{_DB2_BASE}/pretrain/models"
+                         "/dnabert2_tapt_v4/checkpoint-5132"),
+        "tokenizer":    "zhihan1996/DNABERT-2-117M",
+        "max_length":   512,
+    },
+    "dnabert2_tapt_v4_28226": {
+        "type":         "dnabert2",
+        "weights_path": (f"{_DB2_BASE}/pretrain/models"
+                         "/dnabert2_tapt_v4/checkpoint-28226"),
+        "tokenizer":    "zhihan1996/DNABERT-2-117M",
+        "max_length":   512,
+    },
+    "dnabert2_singlenuc_random": {
+        "type":         "dnabert2_singlenuc",
+        "weights_path": "__random__",
+        "tokenizer":    f"{_BASE}/LAMAR/src/pretrain/saving_model"
+                        "/tapt_1024_standard_collator/checkpoint-134000",
+        "max_length":   512,
+    },
 }
 
 _ALL_MODEL_NAMES = list(_MODEL_DEFAULTS.keys()) + ["one_hot"]
@@ -190,6 +211,9 @@ _DEFAULT_LAYER_BY_TYPE = {
     "lamar": 6,
     "dnabert2": 4,
 }
+
+# Ensure new ablation type uses DNABERT-2 default probing layer
+_DEFAULT_LAYER_BY_TYPE["dnabert2_singlenuc"] = 4
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -587,6 +611,38 @@ def build_dnabert2_model_random(weights_path: str, pad_token_id: int,
     return model
 
 
+def build_dnabert2_singlenuc_random(
+    tokenizer,
+    device: torch.device,
+    seed: int,
+) -> AutoModel:
+    """Random-init DNABERT-2 architecture with single-nucleotide vocab (ablation).
+
+    Keeps BERT architecture identical to dnabert2_random but replaces the BPE
+    tokenizer with LAMAR's single-nucleotide tokenizer so tokenization and
+    architecture effects can be disentangled.
+    """
+    set_seed(seed)
+    config = AutoConfig.from_pretrained(
+        "zhihan1996/DNABERT-2-117M",
+        trust_remote_code=True,
+    )
+    # Override vocab size to match the single-nucleotide tokenizer
+    config.vocab_size = len(tokenizer)
+    object.__setattr__(config, "pad_token_id", int(tokenizer.pad_token_id))
+
+    model = AutoModel.from_config(config, trust_remote_code=True)
+    model.apply(_wolf_init)
+    model = _materialize_meta_tensors(model)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(
+        f"  [dnabert2_singlenuc_random] vocab={len(tokenizer)}, "
+        f"{n_params:,} params, seed={seed}"
+    )
+    model.to(device).eval()
+    return model
+
+
 def _get_dnabert2_last_layer(model: AutoModel) -> torch.nn.Module:
     encoder = getattr(model, "encoder", None)
     if encoder is None:
@@ -864,15 +920,31 @@ def get_or_build_emb(
 ) -> np.ndarray:
     p = _cache_path(cache_dir, model_name, layer_idx, task_name)
     if p.exists():
-        X = np.load(p)
-        if expected_n is None or len(X) == expected_n:
-            return X
-        print(
-            f"  [cache] Rebuilding stale cache for {model_name}/{task_name}: "
-            f"n={len(X)} != expected {expected_n}"
-        )
+        try:
+            X = np.load(p)
+            if expected_n is None or len(X) == expected_n:
+                return X
+            print(
+                f"  [cache] Rebuilding stale cache for {model_name}/{task_name}: "
+                f"n={len(X)} != expected {expected_n}"
+            )
+        except (ValueError, OSError, EOFError) as exc:
+            print(
+                f"  [cache] Corrupt/incomplete cache for {model_name}/{task_name}: "
+                f"{type(exc).__name__}: {exc}. Rebuilding."
+            )
+        try:
+            p.unlink(missing_ok=True)
+        except Exception as exc:
+            print(f"  [cache] Warning: failed to remove bad cache {p}: {exc}")
+
     X = build_fn()
-    np.save(p, X)
+
+    # Write atomically so interrupted writes do not leave partial .npy files.
+    tmp = p.with_suffix(".tmp.npy")
+    np.save(tmp, X)
+    os.replace(tmp, p)
+
     return X
 
 
@@ -1287,6 +1359,9 @@ def main() -> None:
             extra = {}
             if spec["type"] == "dnabert2":
                 extra = {"use_fast": True, "trust_remote_code": True, "padding_side": "right"}
+            elif spec["type"] == "dnabert2_singlenuc":
+                # LAMAR tokenizer path — load similarly but no remote custom code needed
+                extra = {"use_fast": True}
             tokenizer_cache[tok_path] = AutoTokenizer.from_pretrained(
                 tok_path,
                 model_max_length=spec["max_length"],
@@ -1333,6 +1408,9 @@ def main() -> None:
                 model = (build_lamar_model_random(tokenizer, device, seed=args.seed)
                          if is_random
                          else build_lamar_model(tokenizer, spec["weights_path"], device))
+            elif mtype == "dnabert2_singlenuc":
+                # Ablation: DNABERT-2 architecture with single-nucleotide tokenizer (always random)
+                model = build_dnabert2_singlenuc_random(tokenizer, device, seed=args.seed)
             else:
                 pad_id = tokenizer.pad_token_id or 0
                 model = (build_dnabert2_model_random(
@@ -1448,6 +1526,8 @@ def main() -> None:
             model = (build_lamar_model_random(tokenizer, device, seed=args.seed)
                      if is_random
                      else build_lamar_model(tokenizer, spec["weights_path"], device))
+        elif mtype == "dnabert2_singlenuc":
+            model = build_dnabert2_singlenuc_random(tokenizer, device, seed=args.seed)
         else:
             pad_id = tokenizer.pad_token_id or 0
             model  = (build_dnabert2_model_random(

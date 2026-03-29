@@ -29,6 +29,7 @@ import glob
 import gc
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -37,8 +38,6 @@ from typing import Any, Dict, List, Optional
 
 def _configure_xla_cuda_data_dir() -> None:
     xla_flags = os.environ.get("XLA_FLAGS", "")
-    if "--xla_gpu_cuda_data_dir=" in xla_flags:
-        return
 
     candidate_roots: List[str] = []
     for env_var in ("CUDA_HOME", "CUDA_PATH", "CUDA_ROOT", "CUDA_DIR"):
@@ -46,8 +45,29 @@ def _configure_xla_cuda_data_dir() -> None:
         if value:
             candidate_roots.append(value)
 
+    # Infer CUDA root from nvcc when module systems do not export CUDA_HOME.
+    nvcc_path = shutil.which("nvcc")
+    if nvcc_path:
+        nvcc_root = str(Path(nvcc_path).resolve().parent.parent)
+        candidate_roots.append(nvcc_root)
+
+    # Try LD_LIBRARY_PATH-derived roots for HPC module environments.
+    for entry in os.environ.get("LD_LIBRARY_PATH", "").split(":"):
+        if not entry:
+            continue
+        p = Path(entry)
+        if "cuda" not in str(p).lower():
+            continue
+        if p.name == "lib64":
+            candidate_roots.append(str(p.parent))
+        elif p.name == "lib":
+            candidate_roots.append(str(p.parent))
+        else:
+            candidate_roots.append(str(p))
+
     candidate_roots.extend(["/usr/local/cuda", "/opt/cuda"])
     candidate_roots.extend(sorted(glob.glob("/usr/local/cuda-*"), reverse=True))
+    candidate_roots.extend(sorted(glob.glob("/opt/cuda-*"), reverse=True))
 
     seen = set()
     for root in candidate_roots:
@@ -56,16 +76,23 @@ def _configure_xla_cuda_data_dir() -> None:
         seen.add(root)
         libdevice = os.path.join(root, "nvvm", "libdevice", "libdevice.10.bc")
         if os.path.exists(libdevice):
-            append_flag = f"--xla_gpu_cuda_data_dir={root}"
-            os.environ["XLA_FLAGS"] = (
-                f"{xla_flags} {append_flag}".strip() if xla_flags else append_flag
-            )
+            os.environ.setdefault("CUDA_HOME", root)
+            os.environ.setdefault("CUDA_PATH", root)
+
+            # Replace a stale value if XLA_FLAGS already contains this option.
+            cleaned = re.sub(r"--xla_gpu_cuda_data_dir=\S+", "", xla_flags).strip()
+            flag = f"--xla_gpu_cuda_data_dir={root}"
+            os.environ["XLA_FLAGS"] = f"{cleaned} {flag}".strip()
+            print(f"[env] xla_gpu_cuda_data_dir={root}")
             return
+
+    print("[WARN] libdevice.10.bc not found in CUDA candidates; forcing no XLA auto-jit.")
 
 
 # TF log level must be set before the import
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
+# Force-disable XLA auto-jit to avoid runtime JIT failures when libdevice is missing.
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
 os.environ["TF_DISABLE_MKL"] = "0"
 _configure_xla_cuda_data_dir()
 
@@ -174,7 +201,7 @@ _MODEL_VARIANTS = {
     },
 }
 
-_OUTPUT_DIR = f"{_BASE}/LAMAR/evalEmbeddings/results/cnn_all_variants"
+_OUTPUT_DIR = f"{_BASE}/LAMAR/evalEmbeddings/results/cnn_diff_cells_last_layer"
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -193,6 +220,16 @@ def parse_args():
     p.add_argument("--layer_search_probe_batch", type=int, default=32)
     p.add_argument("--seed",             type=int, default=42)
     p.add_argument(
+        "--layer_mode",
+        type=str,
+        default=os.environ.get("LAYER_MODE", "search"),
+        choices=["search", "last", "fixed"],
+        help=(
+            "Layer selection mode: 'search' runs per-task layer search, "
+            "'last' uses final hidden layer for all tasks, 'fixed' uses --best_layer."
+        ),
+    )
+    p.add_argument(
         "--variants",
         nargs="+",
         default=list(_MODEL_VARIANTS.keys()),
@@ -200,10 +237,21 @@ def parse_args():
         help="Which model variants to run.",
     )
     p.add_argument(
+        "--task_ids",
+        nargs="+",
+        default=None,
+        help="Optional subset of task ids to run, e.g. data/GTF2F1_K562_IDR.",
+    )
+    p.add_argument(
         "--best_layer",
         type=int,
         default=None,
-        help="Skip layer search and force this layer index for all variants.",
+        help="Layer index used when --layer_mode fixed.",
+    )
+    p.add_argument(
+        "--keep_embeddings",
+        action="store_true",
+        help="Keep per-task embedding caches after each task (default deletes them).",
     )
     return p.parse_args()
 
@@ -669,6 +717,9 @@ def chip_cnn(input_shape, output_shape):
 def main():
     args = parse_args()
 
+    if args.layer_mode == "fixed" and args.best_layer is None:
+        raise ValueError("--layer_mode fixed requires --best_layer to be set")
+
     output_dir   = args.output_dir
     results_csv  = os.path.join(output_dir, "LAMAR_CNN_results.csv")
     cache_dir    = Path(output_dir) / "cache"
@@ -676,17 +727,18 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     ls_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # Discover all RBP tasks
     tasks = discover_tasks(args.data_roots)
+    if args.task_ids:
+        wanted = set(args.task_ids)
+        tasks = [t for t in tasks if t[0] in wanted]
+        print(f"Task filter active: {len(tasks)} matched from {len(wanted)} requested")
     if not tasks:
         raise RuntimeError("No valid RBP tasks found. Check --data_roots.")
     print(f"Tasks discovered : {len(tasks)}")
 
-    # Already-completed (variant, task_id) pairs
     done = completed_pairs(results_csv)
     print(f"Already done     : {len(done)}\n")
 
-    # Load tokenizer once (shared across all variants)
     print(f"Loading tokenizer from: {args.tokenizer_path}")
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer_path,
@@ -695,24 +747,24 @@ def main():
     print(f"  vocab={len(tokenizer)}, "
           f"pad={tokenizer.pad_token_id}, mask={tokenizer.mask_token_id}\n")
 
-    # ── iterate over model variants ───────────────────────────────────────────
     for variant_name in args.variants:
         spec = _MODEL_VARIANTS[variant_name]
         weights_path = spec["weights_path"]
         max_length = spec["max_length"]
-        is_random    = (weights_path is None)
+        is_random = (weights_path is None)
 
-        # Skip entire variant if all tasks are already done
-        pending = [(tid, rb, src, rd) for tid, rb, src, rd in tasks
-                   if (variant_name, tid) not in done]
+        pending = [(tid, rb, src, rd) for tid, rb, src, rd in tasks if (variant_name, tid) not in done]
 
         print(f"\n{'='*70}")
         print(f"Variant : {variant_name}")
         if not is_random:
             print(f"Weights : {weights_path}")
         else:
-            print(f"Weights : (random initialisation)")
+            print("Weights : (random initialisation)")
         print(f"Max len : {max_length}")
+        print(f"Layer mode: {args.layer_mode}")
+        if args.layer_mode == "fixed":
+            print(f"Fixed layer: {args.best_layer}")
         print(f"Tasks pending: {len(pending)} / {len(tasks)}")
         print(f"{'='*70}")
 
@@ -720,12 +772,13 @@ def main():
             print("  All tasks already done for this variant – skipping.")
             continue
 
-        print(f"\n[Phase 1] Extracting embeddings for {variant_name}")
         print(f"\n  Loading LAMAR model ({variant_name}) …")
         model = build_lamar_model(tokenizer, weights_path, is_random, seed=args.seed)
-        task_best_layers: Dict[str, int] = {}
 
-        # ── Phase 1: layer search + embedding extraction ─────────────────────
+        hidden_dim = int(spec["hidden_dim"])
+        emb_shape = (max_length, hidden_dim)
+
+        # Process task-by-task to keep cache size bounded.
         for task_id, rbp_name, source_tag, rbp_dir in pending:
             print(f"\n  --- {task_id} ---")
 
@@ -734,9 +787,17 @@ def main():
                 print("    [SKIP] missing CSV files")
                 continue
 
-            if args.best_layer is not None:
-                best_layer = args.best_layer
-                print(f"    [layer_search] forced layer {best_layer}")
+            if args.layer_mode == "last":
+                best_layer = -1
+                best_layer_for_record = int(getattr(model.config, "num_hidden_layers", 12))
+                print(
+                    f"    [layer] using last hidden layer "
+                    f"(recorded as index {best_layer_for_record})"
+                )
+            elif args.layer_mode == "fixed":
+                best_layer = int(args.best_layer)
+                best_layer_for_record = best_layer
+                print(f"    [layer] using fixed layer {best_layer}")
             else:
                 layer_search_seqs = splits["train"][0] + splits["valid"][0]
                 layer_search_labels = np.concatenate([
@@ -759,8 +820,8 @@ def main():
                     probe_epochs=args.layer_search_probe_epochs,
                     probe_batch_size=args.layer_search_probe_batch,
                 )
-            print(f"    Best layer: {best_layer}")
-            task_best_layers[task_id] = best_layer
+                best_layer_for_record = int(best_layer)
+                print(f"    [layer_search] selected layer {best_layer_for_record}")
 
             emb_dir = cache_dir / variant_name / task_id.replace("/", "__")
             emb_dir.mkdir(parents=True, exist_ok=True)
@@ -768,158 +829,144 @@ def main():
             for split_name in ("train", "valid", "test"):
                 seqs, _ = splits[split_name]
                 emb_path = emb_dir / f"{split_name}.npy"
-
                 if emb_path.exists():
                     print(f"    {split_name:>5}: {len(seqs)} sequences (cached)")
-                else:
-                    print(f"    {split_name:>5}: {len(seqs)} sequences")
-                    extract_embeddings(
-                        seqs=seqs,
-                        model=model,
-                        tokenizer=tokenizer,
-                        max_length=max_length,
-                        batch_size=args.embed_batch_size,
-                        layer_idx=best_layer,
-                        save_path=emb_path,
-                        split_label=f"{variant_name}/{rbp_name}/{split_name}",
+                    continue
+                print(f"    {split_name:>5}: {len(seqs)} sequences (extracting)")
+                extract_embeddings(
+                    seqs=seqs,
+                    model=model,
+                    tokenizer=tokenizer,
+                    max_length=max_length,
+                    batch_size=args.embed_batch_size,
+                    layer_idx=best_layer,
+                    save_path=emb_path,
+                    split_label=f"{variant_name}/{rbp_name}/{split_name}",
+                )
+
+            print(f"    Embedding shape: {emb_shape}")
+
+            dataset_tf = {}
+            task_succeeded = False
+            try:
+                for split_name in ("train", "valid", "test"):
+                    _, labels = splits[split_name]
+                    emb_path = emb_dir / f"{split_name}.npy"
+                    if not emb_path.exists():
+                        raise FileNotFoundError(f"Missing cached embeddings: {emb_path}")
+
+                    dataset_tf[split_name] = make_dataset(
+                        emb_path=emb_path,
+                        labels=labels,
+                        batch_size=args.downstream_batch,
+                        training=(split_name == "train"),
+                        seed=args.seed,
                     )
+
+                acc_list, auroc_list, aupr_list = [], [], []
+
+                for rep in range(args.n_repeats):
+                    cnn = chip_cnn(emb_shape, 1)
+                    cnn.compile(
+                        loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
+                        metrics=[
+                            "accuracy",
+                            tf.keras.metrics.AUC(curve="ROC", name="auroc"),
+                            tf.keras.metrics.AUC(curve="PR", name="aupr"),
+                        ],
+                        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+                        jit_compile=False,
+                        run_eagerly=True,
+                    )
+                    cnn.fit(
+                        dataset_tf["train"],
+                        validation_data=dataset_tf["valid"],
+                        epochs=args.max_epochs,
+                        verbose=0,
+                        callbacks=[
+                            tf.keras.callbacks.EarlyStopping(
+                                patience=10, restore_best_weights=True
+                            ),
+                            tf.keras.callbacks.ReduceLROnPlateau(
+                                monitor="val_loss", factor=0.2, patience=5, min_lr=1e-6
+                            ),
+                        ],
+                    )
+
+                    metrics = np.atleast_1d(cnn.evaluate(dataset_tf["test"], verbose=0)).tolist()
+                    _, acc, roc, pr = metrics
+                    acc_list.append(acc)
+                    auroc_list.append(roc)
+                    aupr_list.append(pr)
+                    print(
+                        f"    rep {rep+1}/{args.n_repeats}: "
+                        f"acc={acc:.4f}  auroc={roc:.4f}  aupr={pr:.4f}"
+                    )
+                    tf.keras.backend.clear_session()
+
+                rec: Dict[str, Any] = {
+                    "model_variant": variant_name,
+                    "task_id": task_id,
+                    "rbp": rbp_name,
+                    "source": source_tag,
+                    "best_layer": best_layer_for_record,
+                    "max_length": max_length,
+                    "embed_batch_size": args.embed_batch_size,
+                    "downstream_batch": args.downstream_batch,
+                    "n_repeats": args.n_repeats,
+                    "max_epochs": args.max_epochs,
+                    "seed": args.seed,
+                    "acc_mean": float(np.mean(acc_list)),
+                    "acc_std": float(np.std(acc_list)),
+                    "auroc_mean": float(np.mean(auroc_list)),
+                    "auroc_std": float(np.std(auroc_list)),
+                    "aupr_mean": float(np.mean(aupr_list)),
+                    "aupr_std": float(np.std(aupr_list)),
+                }
+                print(
+                    f"    → AUROC {rec['auroc_mean']:.4f}±{rec['auroc_std']:.4f}  "
+                    f"AUPR {rec['aupr_mean']:.4f}±{rec['aupr_std']:.4f}"
+                )
+
+                existing: List[Dict[Any, Any]] = []
+                if os.path.exists(results_csv):
+                    try:
+                        existing = pd.read_csv(results_csv).to_dict("records")
+                    except Exception:
+                        existing = []
+                pd.DataFrame(existing + [rec]).to_csv(results_csv, index=False)
+                done.add((variant_name, task_id))
+                task_succeeded = True
+            finally:
+                dataset_tf.clear()
+                gc.collect()
+                tf.keras.backend.clear_session()
+                if task_succeeded and (not args.keep_embeddings) and emb_dir.exists():
+                    shutil.rmtree(emb_dir)
+                    print(f"    [cleanup] removed {emb_dir}")
+                elif (not task_succeeded) and emb_dir.exists():
+                    print(f"    [cleanup] keeping cache after failure: {emb_dir}")
 
         del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
+        print(f"\n[done] Finished variant {variant_name}.")
 
-        print(f"\n[Phase 1] Done for {variant_name}. PyTorch model released.")
-        print(f"\n[Phase 2] Training CNNs for {variant_name}")
-
-        hidden_dim = int(spec["hidden_dim"])
-        emb_shape = (max_length, hidden_dim)
-
-        for task_id, rbp_name, source_tag, rbp_dir in pending:
-            print(f"\n  --- {task_id} ---")
-
-            splits = load_splits(rbp_dir)
-            if splits is None:
-                print("    [SKIP] missing CSV files")
-                continue
-
-            emb_dir = cache_dir / variant_name / task_id.replace("/", "__")
-            if not emb_dir.exists():
-                print(f"    [SKIP] missing embedding cache: {emb_dir}")
-                continue
-
-            best_layer = task_best_layers.get(task_id)
-            if best_layer is None:
-                print(f"    [SKIP] missing cached best layer for {task_id}")
-                continue
-
-            print(f"    Best layer: {best_layer}")
-            print(f"    Embedding shape: {emb_shape}")
-
-            dataset_tf = {}
-            for split_name in ("train", "valid", "test"):
-                _, labels = splits[split_name]
-                emb_path = emb_dir / f"{split_name}.npy"
-                if not emb_path.exists():
-                    raise FileNotFoundError(f"Missing cached embeddings: {emb_path}")
-
-                dataset_tf[split_name] = make_dataset(
-                    emb_path=emb_path,
-                    labels=labels,
-                    batch_size=args.downstream_batch,
-                    training=(split_name == "train"),
-                    seed=args.seed,
-                )
-
-            # Train CNN (n_repeats)
-            acc_list, auroc_list, aupr_list = [], [], []
-
-            for rep in range(args.n_repeats):
-                cnn = chip_cnn(emb_shape, 1)
-                cnn.compile(
-                    loss      = tf.keras.losses.BinaryCrossentropy(from_logits=False),
-                    metrics   = [
-                        "accuracy",
-                        tf.keras.metrics.AUC(curve="ROC", name="auroc"),
-                        tf.keras.metrics.AUC(curve="PR",  name="aupr"),
-                    ],
-                    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3),
-                    jit_compile=False,
-                    run_eagerly=True,
-                )
-                cnn.fit(
-                    dataset_tf["train"],
-                    validation_data = dataset_tf["valid"],
-                    epochs          = args.max_epochs,
-                    verbose         = 0,
-                    callbacks       = [
-                        tf.keras.callbacks.EarlyStopping(
-                            patience=10, restore_best_weights=True
-                        ),
-                        tf.keras.callbacks.ReduceLROnPlateau(
-                            monitor="val_loss", factor=0.2, patience=5, min_lr=1e-6
-                        ),
-                    ],
-                )
-
-                metrics = np.atleast_1d(cnn.evaluate(dataset_tf["test"], verbose=0)).tolist()
-                _, acc, roc, pr = metrics
-                acc_list.append(acc)
-                auroc_list.append(roc)
-                aupr_list.append(pr)
-                print(f"    rep {rep+1}/{args.n_repeats}: "
-                      f"acc={acc:.4f}  auroc={roc:.4f}  aupr={pr:.4f}")
-                tf.keras.backend.clear_session()
-
-            rec: Dict[str, Any] = {
-                "model_variant": variant_name,
-                "task_id":       task_id,
-                "rbp":           rbp_name,
-                "source":        source_tag,
-                "best_layer":    best_layer,
-                "max_length":    max_length,
-                "embed_batch_size": args.embed_batch_size,
-                "downstream_batch": args.downstream_batch,
-                "n_repeats":       args.n_repeats,
-                "max_epochs":      args.max_epochs,
-                "seed":            args.seed,
-                "acc_mean":      float(np.mean(acc_list)),
-                "acc_std":       float(np.std(acc_list)),
-                "auroc_mean":    float(np.mean(auroc_list)),
-                "auroc_std":     float(np.std(auroc_list)),
-                "aupr_mean":     float(np.mean(aupr_list)),
-                "aupr_std":      float(np.std(aupr_list)),
-            }
-            print(f"    → AUROC {rec['auroc_mean']:.4f}±{rec['auroc_std']:.4f}  "
-                  f"AUPR {rec['aupr_mean']:.4f}±{rec['aupr_std']:.4f}")
-
-            # Incremental save after each RBP
-            existing: List[Dict[Any, Any]] = []
-            if os.path.exists(results_csv):
-                try:
-                    existing = pd.read_csv(results_csv).to_dict("records")
-                except Exception:
-                    existing = []
-            pd.DataFrame(existing + [rec]).to_csv(results_csv, index=False)
-
-            dataset_tf.clear()
-            if emb_dir.exists():
-                shutil.rmtree(emb_dir)
-                print(f"    [cleanup] removed {emb_dir}")
-            gc.collect()
-            tf.keras.backend.clear_session()
-
-    # ── final summary ─────────────────────────────────────────────────────────
     if os.path.exists(results_csv):
         df = pd.read_csv(results_csv).drop_duplicates(subset=["model_variant", "task_id"], keep="last")
         print("\n" + "=" * 70)
         print("FINAL SUMMARY (mean AUROC per model variant)")
         print("=" * 70)
-        print(df.groupby("model_variant")[["auroc_mean", "aupr_mean", "acc_mean"]]
-              .mean().round(4).to_string())
+        print(
+            df.groupby("model_variant")[["auroc_mean", "aupr_mean", "acc_mean"]]
+            .mean().round(4).to_string()
+        )
         print("\nPer variant × source:")
-        print(df.groupby(["model_variant", "source"])[["auroc_mean", "aupr_mean"]]
-              .mean().round(4).to_string())
+        print(
+            df.groupby(["model_variant", "source"])[["auroc_mean", "aupr_mean"]]
+            .mean().round(4).to_string()
+        )
     print(f"\nResults saved to: {results_csv}")
     print("Done.")
 

@@ -28,7 +28,7 @@ See ``--help`` for all flags.
 """
 
 from __future__ import annotations
-
+import matplotlib.ticker
 import argparse
 import gc
 import json
@@ -96,7 +96,7 @@ MODEL_SPECS: dict[str, dict] = {
                         "/tapt_1024_standard_collator/checkpoint-134000",
         "max_length":   1024,
     },
-    "lamar_tapt_512": {
+    "lamar_scratch_512": {
         "type":         "lamar",
         "weights_path": f"{_BASE}/LAMAR/src/pretrain/saving_model"
                         "/tapt_lamar/checkpoint-98000",
@@ -133,6 +133,20 @@ MODEL_SPECS: dict[str, dict] = {
         "tokenizer":    "zhihan1996/DNABERT-2-117M",
         "max_length":   512,
     },
+    "dnabert2_tapt_v4_5132": {
+        "type":         "dnabert2",
+        "weights_path": f"{_DB2_BASE}/pretrain/models/dnabert2_tapt_v4/checkpoint-5132",
+        "tokenizer": "zhihan1996/DNABERT-2-117M",
+        "max_length": 512,
+        "hidden_dim": 768,
+    },
+    "dnabert2_tapt_v4_28226": {
+        "type":         "dnabert2",
+        "weights_path": f"{_DB2_BASE}/pretrain/models/dnabert2_tapt_v4/checkpoint-28226",
+        "tokenizer": "zhihan1996/DNABERT-2-117M",
+        "max_length": 512,
+        "hidden_dim": 768,
+    },
     # ── Layer-6 variants (6th transformer block output) ───────────────────
     "lamar_pretrained_layer6": {
         "type":         "lamar",
@@ -151,7 +165,7 @@ MODEL_SPECS: dict[str, dict] = {
         "max_length":   1024,
         "layer_idx":    6,
     },
-    "lamar_tapt_512_layer6": {
+    "lamar_scratch_512_layer6": {
         "type":         "lamar",
         "weights_path": f"{_BASE}/LAMAR/src/pretrain/saving_model"
                         "/tapt_lamar/checkpoint-98000",
@@ -192,11 +206,27 @@ MODEL_SPECS: dict[str, dict] = {
         "max_length":   512,
         "layer_idx":    6,
     },
+    "dnabert2_tapt_v4_5132_layer6": {
+        "type": "dnabert2",
+        "weights_path": f"{_DB2_BASE}/pretrain/models/dnabert2_tapt_v4/checkpoint-5132",
+        "tokenizer": "zhihan1996/DNABERT-2-117M",
+        "max_length": 512,
+        "hidden_dim": 768,
+        "layer_idx": 6,
+    },
+    "dnabert2_tapt_v4_28226_layer6": {
+        "type": "dnabert2",
+        "weights_path": f"{_DB2_BASE}/pretrain/models/dnabert2_tapt_v4/checkpoint-28226",
+        "tokenizer": "zhihan1996/DNABERT-2-117M",
+        "max_length": 512,
+        "hidden_dim": 768,
+        "layer_idx": 6,
+    }
 }
 
 _DATA_ROOTS = [
-    f"{_BASE}/DNABERT2/data",
-    f"{_BASE}/data/finetune_data_koo",
+    "/home/fr/fr_fr/fr_ml642/data/finetune_data_koo",
+    f"{_BASE}/DNABERT2/data"
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -644,9 +674,10 @@ def compute_all_metrics(M: np.ndarray) -> dict:
 #  Cache helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _emb_cache_path(cache_dir: str, model_name: str, task_id: str) -> str:
+def _emb_cache_path(cache_dir: str, model_name: str, task_id: str, layer_idx: int | None = None) -> str:
     safe_task = task_id.replace("/", "__")
-    return os.path.join(cache_dir, model_name, f"{safe_task}.npy")
+    layer_suffix = f"_L{layer_idx}" if layer_idx is not None else ""
+    return os.path.join(cache_dir, model_name, f"{safe_task}{layer_suffix}.npy")
 
 
 def load_or_extract(
@@ -659,8 +690,10 @@ def load_or_extract(
     batch_size: int,
     force: bool,
     seqs: list[str] | None = None,
+    layer_idx: int | None = None,
 ) -> np.ndarray:
-    path = _emb_cache_path(cache_dir, model_name, task["task_id"])
+    # layer_idx can be provided to extract embeddings from a specific transformer layer
+    path = _emb_cache_path(cache_dir, model_name, task["task_id"], layer_idx)
     if not force and os.path.exists(path):
         return np.load(path)
 
@@ -671,7 +704,8 @@ def load_or_extract(
     if not seqs:
         raise RuntimeError(f"No sequences for {task['task_id']}")
 
-    layer_idx = spec.get("layer_idx", None)
+    # layer_idx parameter overrides spec-level layer_idx when provided
+    layer_idx = layer_idx if layer_idx is not None else spec.get("layer_idx", None)
     embs = extract_embeddings(
         model, tokenizer, seqs,
         model_type=spec["type"],
@@ -731,6 +765,10 @@ NICE_NAMES = {
     "dnabert2_tapt":              "DNABERT2 TAPT",
     "lamar_tapt_512_std":         "LAMAR TAPT-512-std",
     "dnabert2_tapt_v3":           "DNABERT2 TAPT-v3",
+    "dnabert2_tapt_v4_28226_layer6": "DNABERT2 TAPT-v4 (28226) L6",
+    "dnabert2_tapt_v4_5132_layer6":  "DNABERT2 TAPT-v4 (5132) L6",
+    "dnabert2_tapt_v4_28226": "DNABERT2 TAPT-v4 (28226)",
+    "dnabert2_tapt_v4_5132":  "DNABERT2 TAPT-v4 (5132)",
     # layer-6 variants
     "lamar_pretrained_layer6":    "LAMAR pretrained L6",
     "lamar_tapt_1024_layer6":     "LAMAR TAPT-1024 L6",
@@ -756,63 +794,73 @@ def _family_subset(df: pd.DataFrame, family_prefix: str) -> pd.DataFrame:
 
 
 def plot_heatmaps(df_metrics: pd.DataFrame, plots_dir: str, file_suffix: str = ""):
-    """2×2 heatmap grid: IsoScore / RankMe / NESum / StableRank."""
+    """One heatmap per metric."""
     models = [m for m in NICE_NAMES if m in df_metrics["model"].unique()]
-    tasks  = sorted(df_metrics["task_id"].unique())
-    metrics = METRIC_ORDER
+    cmaps  = {"IsoScore": "Blues", "RankMe": "YlGnBu",
+               "NESum": "YlOrRd", "StableRank": "PuBu"}
 
-    fig, axes = plt.subplots(2, 2, figsize=(max(14, len(tasks) * 0.9 + 4), 9))
-    cmaps = ["Blues", "YlGnBu", "YlOrRd", "PuBu"]
-
-    for ax, metric, cmap in zip(axes.flat, metrics, cmaps):
+    for metric in METRIC_ORDER:
         sub = df_metrics[df_metrics["model"].isin(models)].copy()
         sub["model_nice"] = sub["model"].map(NICE_NAMES)
         pivot = sub.pivot_table(index="model_nice", columns="task_id",
                                 values=metric, aggfunc="mean")
-        sns.heatmap(pivot, annot=True, fmt=".2f", cmap=cmap, ax=ax,
+
+        fig_w = max(10, len(pivot.columns) * 0.9 + 4)
+        fig_h = max(4,  len(pivot.index)   * 0.55 + 2)
+        fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+        fmt = ".0f" if metric == "RankMe" else ".2f"
+        sns.heatmap(pivot, annot=True, fmt=fmt,
+                    cmap=cmaps.get(metric, "Blues"), ax=ax,
                     linewidths=0.4, linecolor="white",
                     cbar_kws={"shrink": 0.8})
-        ax.set_title(metric, fontsize=12, fontweight="bold")
+        ax.set_title(metric, fontsize=13, fontweight="bold")
         ax.set_xlabel("")
         ax.set_ylabel("")
         ax.tick_params(axis="x", rotation=45, labelsize=7)
-        ax.tick_params(axis="y", rotation=0, labelsize=8)
+        ax.tick_params(axis="y", rotation=0,  labelsize=8)
 
-    plt.suptitle("Embedding Quality Metrics — Model × RBP Task", fontsize=14, y=1.01)
-    plt.tight_layout()
-    suffix = f"_{file_suffix}" if file_suffix else ""
-    path = os.path.join(plots_dir, f"heatmaps_all_metrics{suffix}.png")
-    plt.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  saved: {path}")
+        plt.tight_layout()
+        suffix = f"_{file_suffix}" if file_suffix else ""
+        path = os.path.join(plots_dir, f"heatmap_{metric.lower()}{suffix}.png")
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  saved: {path}")
 
 
 def plot_metric_boxplots(df_metrics: pd.DataFrame, plots_dir: str, file_suffix: str = ""):
-    """Box/swarm plots: distribution across RBPs per model × metric."""
+    """One box/swarm plot per metric."""
     models = [m for m in NICE_NAMES if m in df_metrics["model"].unique()]
     df = df_metrics[df_metrics["model"].isin(models)].copy()
     df["model_nice"] = df["model"].map(NICE_NAMES)
-
-    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
     palette = sns.color_palette("tab10", len(models))
 
-    for ax, metric in zip(axes.flat, METRIC_ORDER):
+    for metric in METRIC_ORDER:
+        fig, ax = plt.subplots(figsize=(max(8, len(models) * 1.2), 5))
+
         sns.boxplot(data=df, x="model_nice", y=metric, ax=ax,
                     palette=palette, width=0.5, linewidth=1.2)
         sns.stripplot(data=df, x="model_nice", y=metric, ax=ax,
                       color="black", alpha=0.55, size=3.5, jitter=True)
-        ax.set_title(metric, fontweight="bold")
+
+        if metric == "RankMe":
+            # Round y-axis ticks to integers
+            y_min, y_max = ax.get_ylim()
+            ax.yaxis.set_major_locator(
+                matplotlib.ticker.MaxNLocator(integer=True)
+            )
+
+        ax.set_title(metric, fontweight="bold", fontsize=13)
         ax.set_xlabel("")
         ax.set_ylabel(metric)
         ax.tick_params(axis="x", rotation=30, labelsize=8)
 
-    plt.suptitle("Embedding Quality Distribution Across RBP Tasks", fontsize=13)
-    plt.tight_layout()
-    suffix = f"_{file_suffix}" if file_suffix else ""
-    path = os.path.join(plots_dir, f"boxplots_per_metric{suffix}.png")
-    plt.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  saved: {path}")
+        plt.tight_layout()
+        suffix = f"_{file_suffix}" if file_suffix else ""
+        path = os.path.join(plots_dir, f"boxplot_{metric.lower()}{suffix}.png")
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        plt.close()
+        print(f"  saved: {path}")
 
 
 def plot_radar(df_metrics: pd.DataFrame, plots_dir: str, file_suffix: str = ""):
@@ -851,7 +899,7 @@ def plot_radar(df_metrics: pd.DataFrame, plots_dir: str, file_suffix: str = ""):
     plt.tight_layout()
     suffix = f"_{file_suffix}" if file_suffix else ""
     path = os.path.join(plots_dir, f"radar_chart{suffix}.png")
-    plt.savefig(path, dpi=150, bbox_inches="tight")
+    plt.savefig(path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  saved: {path}")
 
@@ -891,7 +939,7 @@ def plot_sensitivity(df_sens: pd.DataFrame, plots_dir: str, file_suffix: str = "
     plt.tight_layout()
     suffix = f"_{file_suffix}" if file_suffix else ""
     path = os.path.join(plots_dir, f"sensitivity_seq_length{suffix}.png")
-    plt.savefig(path, dpi=150, bbox_inches="tight")
+    plt.savefig(path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  saved: {path}")
 
@@ -968,24 +1016,30 @@ def parse_args():
         description="Unsupervised embedding-quality evaluation pipeline",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--data_roots",     nargs="+", default=_DATA_ROOTS)
-    p.add_argument("--output_dir",     type=str,
-                   default=str(_SCRIPT_DIR / "results" / "unsupervised_eval"))
-    p.add_argument("--models",         nargs="+", default=list(MODEL_SPECS.keys()),
+    p.add_argument("--data_roots", nargs="+", default=_DATA_ROOTS,
+                   help="List of data root directories to discover tasks from")
+    p.add_argument("--output_dir", type=str,
+                   default=str(_SCRIPT_DIR / "results" / f"unsupervised_eval_{time.strftime('%Y%m%d-%H%M%S')}"),
+                   help="Directory to write outputs (metrics, sensitivity, plots)")
+    p.add_argument("--models", nargs="+", default=list(MODEL_SPECS.keys()),
                    choices=list(MODEL_SPECS.keys()),
                    help="Which models to evaluate")
-    p.add_argument("--batch_size",     type=int, default=32)
+    p.add_argument("--batch_size", type=int, default=32,
+                   help="Batch size for embedding extraction")
     p.add_argument("--sensitivity_task", type=str, default=None,
                    help="task_id to use for seq-length sensitivity (default: first task)")
     p.add_argument("--n_sensitivity_tasks", type=int, default=3,
                    help="Number of tasks to run sensitivity on (if --sensitivity_task not set)")
-    p.add_argument("--n_bins",         type=int, default=6)
-    p.add_argument("--pca_scatter",    action="store_true",
+    p.add_argument("--n_bins", type=int, default=6,
+                   help="Number of quantile bins for sensitivity analysis")
+    p.add_argument("--pca_scatter", action="store_true",
                    help="Save per-(model, task) PCA scatter plots (many files)")
     p.add_argument("--force_reextract", action="store_true",
                    help="Re-extract embeddings even if cache exists")
     p.add_argument("--plots_only", action="store_true",
                    help="Skip evaluation and generate plots from existing metrics.csv/sensitivity.csv")
+    p.add_argument("--eval_every_other_layers", action="store_true",
+                   help="Evaluate metrics on every other layer (1,3,5,7,9,11) for models without fixed layer_idx")
     return p.parse_args()
 
 
@@ -1065,6 +1119,19 @@ def main():
     all_metrics:  list[dict] = []
     all_sens:     list[dict] = []
 
+    # Layers to evaluate when --eval_every_other_layers is set
+    layers_to_eval = [1, 3, 5, 7, 9, 11]
+
+    # If requested, extend NICE_NAMES with per-layer display names so plots include them
+    if args.eval_every_other_layers:
+        for base in list(MODEL_SPECS.keys()):
+            spec_b = MODEL_SPECS[base]
+            # skip specs that already fix a layer
+            if spec_b.get("layer_idx") is not None:
+                continue
+            for l in layers_to_eval:
+                NICE_NAMES[f"{base}_L{l}"] = f"{NICE_NAMES.get(base, base)} L{l}"
+
     # ── Per-model loop ───────────────────────────────────────────────────────
     for model_name in args.models:
         spec = MODEL_SPECS[model_name]
@@ -1101,64 +1168,128 @@ def main():
                 print(f"    [ERROR] loading sequences: {e}")
                 continue
 
-            try:
-                embs = load_or_extract(
-                    str(cache_dir), model_name, task,
-                    model, tokenizer, spec,
-                    batch_size=args.batch_size,
-                    force=args.force_reextract,
-                    seqs=seqs,
-                )
-            except Exception as e:
-                print(f"    [ERROR] embedding: {e}")
-                continue
+            # If evaluating every-other layers, loop over those layer indices
+            if args.eval_every_other_layers and spec.get("layer_idx") is None:
+                for layer in layers_to_eval:
+                    try:
+                        embs = load_or_extract(
+                            str(cache_dir), model_name, task,
+                            model, tokenizer, spec,
+                            batch_size=args.batch_size,
+                            force=args.force_reextract,
+                            seqs=seqs,
+                            layer_idx=layer,
+                        )
+                    except Exception as e:
+                        print(f"    [ERROR] embedding (layer {layer}): {e}")
+                        continue
 
-            # Sanity-check embeddings
-            if np.any(np.isnan(embs)):
-                print(f"    [WARN] embeddings contain NaN – skipping task")
-                continue
-            emb_norms = np.linalg.norm(embs, axis=1)
-            print(
-                f"    [emb] shape={embs.shape}  "
-                f"norm mean={emb_norms.mean():.4f}  "
-                f"min={emb_norms.min():.4f}  max={emb_norms.max():.4f}"
-            )
-            if emb_norms.mean() < 0.01:
-                print(f"    [WARN] mean embedding norm < 0.01 – embeddings may be collapsed")
+                    # Sanity-check embeddings
+                    if np.any(np.isnan(embs)):
+                        print(f"    [WARN] embeddings contain NaN – skipping task (layer {layer})")
+                        continue
+                    emb_norms = np.linalg.norm(embs, axis=1)
+                    print(
+                        f"    [emb L{layer}] shape={embs.shape}  "
+                        f"norm mean={emb_norms.mean():.4f}  "
+                        f"min={emb_norms.min():.4f}  max={emb_norms.max():.4f}"
+                    )
+                    if emb_norms.mean() < 0.01:
+                        print(f"    [WARN] mean embedding norm < 0.01 – embeddings may be collapsed (layer {layer})")
 
-            # Global metrics
-            try:
-                m = compute_all_metrics(embs)
-            except Exception as e:
-                print(f"    [ERROR] metrics: {e}")
-                continue
+                    # Global metrics
+                    try:
+                        m = compute_all_metrics(embs)
+                    except Exception as e:
+                        print(f"    [ERROR] metrics (layer {layer}): {e}")
+                        continue
 
-            m["model"]   = model_name
-            m["task_id"] = task["task_id"]
-            m["n_seqs"]  = len(embs)
-            all_metrics.append(m)
-            print(
-                f"    IsoScore={m['IsoScore']:.3f}  "
-                f"RankMe={m['RankMe']:.1f}  "
-                f"NESum={m['NESum']:.3f}  "
-                f"StableRank={m['StableRank']:.3f}"
-            )
-
-            # PCA scatter (optional) – reuse already-loaded seqs/labels
-            if args.pca_scatter:
-                if len(labels) == len(embs):
-                    plot_pca_scatter(
-                        embs, labels, model_name, task["task_id"],
-                        str(plots_dir)
+                    m["model"]   = f"{model_name}_L{layer}"
+                    m["task_id"] = task["task_id"]
+                    m["n_seqs"]  = len(embs)
+                    m["layer_idx"] = layer
+                    all_metrics.append(m)
+                    print(
+                        f"    L{layer} IsoScore={m['IsoScore']:.3f}  "
+                        f"RankMe={m['RankMe']:.1f}  "
+                        f"NESum={m['NESum']:.3f}  "
+                        f"StableRank={m['StableRank']:.3f}"
                     )
 
-            # Sensitivity – reuse already-loaded seqs
-            if task["task_id"] in sens_task_ids:
-                rows = sensitivity_analysis(embs, seqs, n_bins=args.n_bins)
-                for r in rows:
-                    r["model"]   = model_name
-                    r["task_id"] = task["task_id"]
-                all_sens.extend(rows)
+                    # PCA scatter (optional)
+                    if args.pca_scatter:
+                        if len(labels) == len(embs):
+                            plot_pca_scatter(
+                                embs, labels, f"{model_name}_L{layer}", task["task_id"],
+                                str(plots_dir)
+                            )
+
+                    # Sensitivity – reuse already-loaded seqs
+                    if task["task_id"] in sens_task_ids:
+                        rows = sensitivity_analysis(embs, seqs, n_bins=args.n_bins)
+                        for r in rows:
+                            r["model"]   = f"{model_name}_L{layer}"
+                            r["task_id"] = task["task_id"]
+                        all_sens.extend(rows)
+            else:
+                try:
+                    embs = load_or_extract(
+                        str(cache_dir), model_name, task,
+                        model, tokenizer, spec,
+                        batch_size=args.batch_size,
+                        force=args.force_reextract,
+                        seqs=seqs,
+                    )
+                except Exception as e:
+                    print(f"    [ERROR] embedding: {e}")
+                    continue
+
+                # Sanity-check embeddings
+                if np.any(np.isnan(embs)):
+                    print(f"    [WARN] embeddings contain NaN – skipping task")
+                    continue
+                emb_norms = np.linalg.norm(embs, axis=1)
+                print(
+                    f"    [emb] shape={embs.shape}  "
+                    f"norm mean={emb_norms.mean():.4f}  "
+                    f"min={emb_norms.min():.4f}  max={emb_norms.max():.4f}"
+                )
+                if emb_norms.mean() < 0.01:
+                    print(f"    [WARN] mean embedding norm < 0.01 – embeddings may be collapsed")
+
+                # Global metrics
+                try:
+                    m = compute_all_metrics(embs)
+                except Exception as e:
+                    print(f"    [ERROR] metrics: {e}")
+                    continue
+
+                m["model"]   = model_name
+                m["task_id"] = task["task_id"]
+                m["n_seqs"]  = len(embs)
+                all_metrics.append(m)
+                print(
+                    f"    IsoScore={m['IsoScore']:.3f}  "
+                    f"RankMe={m['RankMe']:.1f}  "
+                    f"NESum={m['NESum']:.3f}  "
+                    f"StableRank={m['StableRank']:.3f}"
+                )
+
+                # PCA scatter (optional) – reuse already-loaded seqs/labels
+                if args.pca_scatter:
+                    if len(labels) == len(embs):
+                        plot_pca_scatter(
+                            embs, labels, model_name, task["task_id"],
+                            str(plots_dir)
+                        )
+
+                # Sensitivity – reuse already-loaded seqs
+                if task["task_id"] in sens_task_ids:
+                    rows = sensitivity_analysis(embs, seqs, n_bins=args.n_bins)
+                    for r in rows:
+                        r["model"]   = model_name
+                        r["task_id"] = task["task_id"]
+                    all_sens.extend(rows)
 
         # Free GPU memory before next model
         del model

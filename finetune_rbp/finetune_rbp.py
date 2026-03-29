@@ -6,6 +6,7 @@ Fixed-hyperparameter fine-tuning for ALL model variants on per-RBP datasets.
 Data sources (auto-detected from rbp_name, or pass --data_root explicitly):
   data/finetune_data_koo/  – 10 RBPs (names ending in _200)
   DNABERT2/data/           –  8 RBPs (IDR-based, names ending in _IDR)
+    data/diff_cells_data/splits_csv/ – many per-length tasks (e.g. *.fixlen_101, *.fixlen_201)
 
 Supported variants:
   LAMAR:    lamar_pretrained, lamar_tapt_1024, lamar_tapt_standard_1gpu,
@@ -90,6 +91,7 @@ _DB2_BASE = os.path.join(_BASE, "DNABERT2")
 
 DATA_ROOT_KOO = os.path.join(_BASE, "data", "finetune_data_koo")
 DATA_ROOT_CSV = os.path.join(_DB2_BASE, "data")
+DATA_ROOT_DIFF = os.path.join(_BASE, "data", "diff_cells_data", "splits_csv")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -172,6 +174,20 @@ MODEL_SPECS: dict[str, dict] = {
         "tokenizer":    "zhihan1996/DNABERT-2-117M",
         "max_length":   512,
     },
+    "dnabert2_tapt_v4_5132": {
+        "type":         "dnabert2",
+        "weights_path": (f"{_DB2_BASE}/pretrain/models"
+                         "/dnabert2_tapt_v4/checkpoint-5132"),
+        "tokenizer":    "zhihan1996/DNABERT-2-117M",
+        "max_length":   512,
+    },
+    "dnabert2_tapt_v4_28226": {
+        "type":         "dnabert2",
+        "weights_path": (f"{_DB2_BASE}/pretrain/models"
+                         "/dnabert2_tapt_v4/checkpoint-28226"),
+        "tokenizer":    "zhihan1996/DNABERT-2-117M",
+        "max_length":   512,
+    },
     "dnabert2_random": {
         "type":         "dnabert2",
         "weights_path": "",          # empty → random init
@@ -184,7 +200,7 @@ ALL_VARIANTS = list(MODEL_SPECS.keys())
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Fixed Hyperparameters  (same as finetune_cross.py)
+#  Fixed Hyperparameters
 # ═══════════════════════════════════════════════════════════════
 LEARNING_RATE = 5e-5
 BATCH_SIZE    = 16
@@ -228,19 +244,30 @@ def _aggregate_cv_metrics(fold_metrics: list) -> dict:
 
 
 def _find_data_root(rbp_name: str) -> str:
-    """Auto-detect data root from rbp_name pattern."""
+    """Auto-detect data root from rbp_name pattern, then verify by existence."""
+    # Start with likely root by naming convention, then fall back to exhaustive check.
+    preferred_roots = []
     if rbp_name.endswith("_200"):
-        root = DATA_ROOT_KOO
+        preferred_roots.append(DATA_ROOT_KOO)
+    elif rbp_name.endswith("_IDR"):
+        preferred_roots.append(DATA_ROOT_CSV)
     else:
-        root = DATA_ROOT_CSV
-    rbp_dir = os.path.join(root, rbp_name)
-    if not os.path.isdir(rbp_dir):
-        raise FileNotFoundError(
-            f"RBP directory not found: {rbp_dir}\n"
-            f"Checked koo root: {DATA_ROOT_KOO}\n"
-            f"Checked csv root: {DATA_ROOT_CSV}"
-        )
-    return root
+        preferred_roots.append(DATA_ROOT_DIFF)
+
+    all_roots = [DATA_ROOT_KOO, DATA_ROOT_CSV, DATA_ROOT_DIFF]
+    roots_to_check = preferred_roots + [r for r in all_roots if r not in preferred_roots]
+
+    for root in roots_to_check:
+        rbp_dir = os.path.join(root, rbp_name)
+        if os.path.isdir(rbp_dir):
+            return root
+
+    raise FileNotFoundError(
+        f"RBP directory not found for: {rbp_name}\n"
+        f"Checked koo root: {DATA_ROOT_KOO}\n"
+        f"Checked csv root: {DATA_ROOT_CSV}\n"
+        f"Checked diff root: {DATA_ROOT_DIFF}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -536,6 +563,13 @@ def run_dnabert2(spec: dict, variant: str, rbp_dir: str, output_dir: str, args) 
     is_random  = not bool(weights_path)
     # For a random model we still need a HF base to initialise architecture
     model_path = weights_path if weights_path else "zhihan1996/DNABERT-2-117M"
+
+    # Fail early with a clear message for broken local checkpoint paths.
+    if (not is_random) and os.path.isabs(model_path) and (not os.path.exists(model_path)):
+        raise FileNotFoundError(
+            f"Configured local DNABERT2 checkpoint does not exist: {model_path}\n"
+            "Please verify MODEL_SPECS['weights_path'] for this variant."
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_path,

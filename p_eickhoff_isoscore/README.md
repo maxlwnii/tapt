@@ -1,38 +1,91 @@
-# IsoScore & I-STAR 
-This repository contains code for two related projects: IsoScore and I-STAR. In IsoScore, we develop the first tool capable of accurately measuring isotropy in embedding space. In I-STAR, we develop a novel regularization penalty based on an improved version of IsoScore, IsoScore⋆, that is capable of decreasing and increasing isotropy in embedding space. Full details of each project are contained in the directories IsoScore and I-STAR. To easily access IsoScore, IsoScore⋆ and use I-STAR loss for fine-tuning models, you can install IsoScore via PyPI as follows:
+# p_eickhoff_isoscore
 
+Unsupervised embedding-quality evaluation utilities used in this thesis, centered on IsoScore-family metrics and companion rank/spectrum diagnostics.
+
+## Purpose
+
+This folder is used to evaluate frozen embeddings without supervised classifier training, compare model variants, and export publication-ready figures.
+
+It includes:
+- task discovery across RBP datasets,
+- embedding extraction and caching,
+- isotropy/spectral metrics (IsoScore, RankMe, NESum, StableRank),
+- sensitivity analyses and consolidated plots.
+
+## Important Scripts
+
+- `unsupervised_eval.py`
+  - Main end-to-end pipeline.
+  - Extracts embeddings, caches `.npy`, computes metrics, and writes plots/CSVs.
+  - Supports last-layer and optional specific-layer variants configured in model specs.
+
+- `run_unsupervised_eval.sh`
+  - Standard launch script for selected model subsets.
+
+- `run_unsupervised_eval_layers.sh`
+  - Runs layer-oriented evaluation mode.
+
+- `slurm_unsup_eval_last.sbatch`
+- `slurm_unsup_eval_layers.sbatch`
+  - SLURM templates for cluster execution of last-layer vs layer-based runs.
+
+- `plot_from_summary.py`
+  - Recreates plots from `summary.csv` exports without rerunning embedding extraction.
+
+- `make_plots_from_summary.py`
+  - Generates additional heatmap/bar/radar-style figures from summary-level metrics.
+
+- `combine_unsupervised_eval_plots.py`
+  - Produces combined comparison figures across two run directories.
+
+## Data Inputs
+
+Expected per-task CSV layout under each data root:
+- `<root>/<task_name>/train.csv`
+- `<root>/<task_name>/dev.csv`
+- `<root>/<task_name>/test.csv`
+
+Expected columns:
+- sequence-like column (for nucleotide string),
+- binary label column.
+
+## Typical Commands
+
+### Run unsupervised evaluation
+
+```bash
+bash p_eickhoff_isoscore/run_unsupervised_eval.sh
 ```
-pip install IsoScore
-from IsoScore.IsoScore import *
+
+### Run layer-oriented evaluation
+
+```bash
+bash p_eickhoff_isoscore/run_unsupervised_eval_layers.sh
 ```
 
-Our pip installation contains the necessary functions to measure isotropy using IsoScore, IsoScore_star, and has an istar module that can be used to compute I-STAR loss.
+### Build plots from summary CSV only
 
-## IsoScore: Measuring the Uniformity of Embedding Space Utilization 
-The first paper proposes IsoScore: a novel tool that quantifies the degree to which a point cloud uniformly utilizes the ambient vector space. Using rigorously designed tests, we demonstrate that IsoScore is the only tool available in the literature that accurately measures how uniformly distributed variance is across dimensions in vector space. IsoScore was published in the Findings of the ACL 2022 (https://aclanthology.org/2022.findings-acl.262/. If you would like to cite this work, please refer to:
-
-```bibtex
-@inproceedings{rudman-etal-2022-isoscore,
-    title = "{I}so{S}core: Measuring the Uniformity of Embedding Space Utilization",
-    author = "Rudman, William  and
-      Gillman, Nate  and
-      Rayne, Taylor  and
-      Eickhoff, Carsten",
-    booktitle = "Findings of the Association for Computational Linguistics: ACL 2022",
-    month = may,
-    year = "2022",
-    address = "Dublin, Ireland",
-    publisher = "Association for Computational Linguistics",
-    url = "https://aclanthology.org/2022.findings-acl.262",
-    doi = "10.18653/v1/2022.findings-acl.262",
-    pages = "3325--3339",
-    }
+```bash
+python p_eickhoff_isoscore/plot_from_summary.py
 ```
 
-## Stable Anisotropic Regularization
-In this paper, we propose I-STAR: IsoScore⋆-based STable Anisotropic Regularization, a novel regularization method that can be used to increase or decrease levels of isotropy in embedding space during training. I-STAR uses IsoScore⋆, an improved version of IsoScore that is both differentiable and stable on mini-batch computations. In contrast to several previous works, we find that decreasing isotropy in LLMs tends to improve performance on a variety of fine-tuning tasks. I-STAR was published at ICLR 2024 (https://arxiv.org/pdf/2305.19358). 
+## Outputs
 
+Default outputs are written under:
+- `p_eickhoff_isoscore/results/`
 
-## License
+Common artifacts:
+- `metrics.csv` (per model x task),
+- `sensitivity.csv` (length-bin sensitivity metrics),
+- `summary.csv` (aggregated means/std where produced),
+- `plots/*.png`.
 
-Both projects are licensed under the MIT License.
+## Environment Notes
+
+- Cluster scripts expect a Python environment with PyTorch, Transformers, and plotting stack installed.
+- Some scripts expect `THESIS_ROOT` and `PYTHONPATH` to include the local LAMAR package.
+- GPU is recommended for embedding extraction speed.
+
+## Upstream Components
+
+The bundled `IsoScore/` and `I-STAR/` directories contain upstream method implementations and references used by these evaluation scripts.

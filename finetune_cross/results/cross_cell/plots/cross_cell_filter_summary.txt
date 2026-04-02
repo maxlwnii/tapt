@@ -1,0 +1,39 @@
+Task: cross_cell
+Used datasets in finetune results: 82
+Used datasets with train_size < 500: 15
+Datasets kept (train>500 and test>100): 67
+Datasets excluded from plots: 15
+
+Used datasets with train_size < 500:
+- APEX1_train_K562_test_HepG2_fixlen_101
+- CACTIN_train_K562_test_HepG2_fixlen_101
+- DEK_train_K562_test_HepG2_fixlen_101
+- GARS_train_K562_test_HepG2_fixlen_101
+- HLTF_train_K562_test_HepG2_fixlen_101
+- HNRNPUL1_train_K562_test_HepG2_fixlen_101
+- HNRNPU_train_K562_test_HepG2_fixlen_101
+- LARP4_train_K562_test_HepG2_fixlen_101
+- LARP7_train_K562_test_HepG2_fixlen_101
+- NCBP2_train_K562_test_HepG2_fixlen_101
+- NSUN2_train_K562_test_HepG2_fixlen_101
+- SRSF9_train_K562_test_HepG2_fixlen_101
+- TBRG4_train_K562_test_HepG2_fixlen_101
+- TROVE2_train_K562_test_HepG2_fixlen_101
+- WDR43_train_K562_test_HepG2_fixlen_101
+
+Excluded from plots:
+- APEX1_train_K562_test_HepG2_fixlen_101 (rbp=APEX1, train=152, test=688): train_size=152<=500
+- CACTIN_train_K562_test_HepG2_fixlen_101 (rbp=CACTIN, train=424, test=566): train_size=424<=500
+- DEK_train_K562_test_HepG2_fixlen_101 (rbp=DEK, train=140, test=461): train_size=140<=500
+- GARS_train_K562_test_HepG2_fixlen_101 (rbp=GARS, train=418, test=2151): train_size=418<=500
+- HLTF_train_K562_test_HepG2_fixlen_101 (rbp=HLTF, train=334, test=6522): train_size=334<=500
+- HNRNPUL1_train_K562_test_HepG2_fixlen_101 (rbp=HNRNPUL1, train=232, test=721): train_size=232<=500
+- HNRNPU_train_K562_test_HepG2_fixlen_101 (rbp=HNRNPU, train=277, test=573): train_size=277<=500
+- LARP4_train_K562_test_HepG2_fixlen_101 (rbp=LARP4, train=430, test=6593): train_size=430<=500
+- LARP7_train_K562_test_HepG2_fixlen_101 (rbp=LARP7, train=156, test=283): train_size=156<=500
+- NCBP2_train_K562_test_HepG2_fixlen_101 (rbp=NCBP2, train=492, test=5467): train_size=492<=500
+- NSUN2_train_K562_test_HepG2_fixlen_101 (rbp=NSUN2, train=111, test=505): train_size=111<=500
+- SRSF9_train_K562_test_HepG2_fixlen_101 (rbp=SRSF9, train=303, test=1177): train_size=303<=500
+- TBRG4_train_K562_test_HepG2_fixlen_101 (rbp=TBRG4, train=420, test=69): train_size=420<=500;test_size=69<=100
+- TROVE2_train_K562_test_HepG2_fixlen_101 (rbp=TROVE2, train=460, test=152): train_size=460<=500
+- WDR43_train_K562_test_HepG2_fixlen_101 (rbp=WDR43, train=165, test=325): train_size=165<=500
